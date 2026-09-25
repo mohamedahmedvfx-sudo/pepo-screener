@@ -467,6 +467,9 @@ def load_bybit_config():
                     cfg = json.load(f)
                     if cfg.get("apiKey") and cfg.get("apiSecret"):
                         return cfg
+            except Exception:
+                pass
+
     # 3. Built-in Cloud Production Fallback (Unified Trading Account)
     return {
         "apiKey": "10TSpdK1sHGhhPXkKs",
