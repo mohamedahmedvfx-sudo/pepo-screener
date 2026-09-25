@@ -2139,17 +2139,28 @@ async function fetchRealPositions() {
             }
 
             // History KPIs
+            const histList = data.history || [];
+            const sumPnl = histList.reduce((acc, h) => acc + (parseFloat(h.realizedPnL) || 0), 0);
             const stats = data.stats || {};
+            const rPnl = (stats.totalRealizedPnL !== undefined && stats.totalRealizedPnL !== null) ? stats.totalRealizedPnL : sumPnl;
+
             const histPnlEl = document.getElementById('realHistTotalPnl');
+            const openHistPnlEl = document.getElementById('realOpenHistTotalPnl');
             const histWinEl = document.getElementById('realHistWinRate');
             const histCountEl = document.getElementById('realHistTradesCount');
+            const pnlFormatted = `${rPnl >= 0 ? '+' : ''}$${rPnl.toFixed(2)} USDT`;
+            const pnlClass = `dk-val mono font-bold ${rPnl >= 0 ? 'text-green' : 'text-red'}`;
+
             if (histPnlEl) {
-                const rPnl = stats.totalRealizedPnL || 0;
-                histPnlEl.innerText = `${rPnl >= 0 ? '+' : ''}$${rPnl.toFixed(2)} USDT`;
-                histPnlEl.className = `dk-val mono font-bold ${rPnl >= 0 ? 'text-green' : 'text-red'}`;
+                histPnlEl.innerText = pnlFormatted;
+                histPnlEl.className = pnlClass;
+            }
+            if (openHistPnlEl) {
+                openHistPnlEl.innerText = pnlFormatted;
+                openHistPnlEl.className = pnlClass;
             }
             if (histWinEl) histWinEl.innerText = `${stats.winRate || 100}%`;
-            if (histCountEl) histCountEl.innerText = `${stats.totalTrades || histList.length} صفقات`;
+            if (histCountEl) histCountEl.innerText = `${histList.length} صفقات`;
 
             renderRealPositionsTable();
             renderRealHistoryTable();

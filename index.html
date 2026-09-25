@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600;700;800&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=5">
+    <link rel="stylesheet" href="style.css?v=8">
     <!-- TradingView Embed Widget & Lightweight Charts Local -->
     <script type="text/javascript" src="lightweight-charts.js"></script>
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
@@ -663,7 +663,7 @@
                     </button>
                     <button type="button" class="d-tab-btn" id="tabBtnRealHistory" onclick="switchRealTab('history')">
                         <span>📜 سجل الصفقات والأرباح المحققة</span>
-                        <span class="tab-badge" id="badgeRealHistory">1</span>
+                        <span class="tab-badge" id="badgeRealHistory">2</span>
                     </button>
                 </div>
 
@@ -671,15 +671,19 @@
                 <div class="demo-kpi-grid" id="realKpiOpenGrid">
                     <div class="demo-kpi-card">
                         <span class="dk-lbl">رأس المال المستثمر بالصفقات:</span>
-                        <span class="dk-val mono text-gold" id="realTotalInvested">$0.00 USDT</span>
+                        <span class="dk-val mono text-gold" id="realTotalInvested">$249.94 USDT</span>
                     </div>
                     <div class="demo-kpi-card">
                         <span class="dk-lbl">القيمة السوقية اللحظية:</span>
-                        <span class="dk-val mono" id="realTotalValue">$0.00 USDT</span>
+                        <span class="dk-val mono" id="realTotalValue">$254.00 USDT</span>
                     </div>
                     <div class="demo-kpi-card">
-                        <span class="dk-lbl">الربح/الخسارة اللحظية الإجمالية (PnL):</span>
-                        <span class="dk-val mono font-bold" id="realTotalPnL">$0.00</span>
+                        <span class="dk-lbl">الربح/الخسارة اللحظية (عائمة PnL):</span>
+                        <span class="dk-val mono font-bold text-green" id="realTotalPnL">+$4.06</span>
+                    </div>
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">إجمالي الأرباح المحققة (Realized PnL):</span>
+                        <span class="dk-val mono font-bold text-green" id="realOpenHistTotalPnl">+$2.49 USDT</span>
                     </div>
                 </div>
 
@@ -687,7 +691,7 @@
                 <div class="demo-kpi-grid" id="realKpiHistoryGrid" style="display:none;">
                     <div class="demo-kpi-card">
                         <span class="dk-lbl">إجمالي الأرباح المحققة (Realized PnL):</span>
-                        <span class="dk-val mono font-bold text-green" id="realHistTotalPnl">+$0.00</span>
+                        <span class="dk-val mono font-bold text-green" id="realHistTotalPnl">+$2.49 USDT</span>
                     </div>
                     <div class="demo-kpi-card">
                         <span class="dk-lbl">نسبة نجاح الصفقات (Win Rate):</span>
@@ -695,7 +699,7 @@
                     </div>
                     <div class="demo-kpi-card">
                         <span class="dk-lbl">الصفقات المغلقة المنفذة:</span>
-                        <span class="dk-val mono" id="realHistTradesCount">0 صفقات</span>
+                        <span class="dk-val mono" id="realHistTradesCount">2 صفقات</span>
                     </div>
                 </div>
 
@@ -889,6 +893,6 @@
     </footer>
 
     <!-- App Logic -->
-    <script src="app.js?v=5"></script>
+    <script src="app.js?v=8"></script>
 </body>
 </html>
