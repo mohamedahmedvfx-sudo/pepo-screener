@@ -1578,10 +1578,13 @@ def kill_port_owner(port=PORT):
         pass
 
 def background_stop_loss_guard():
-    print("🛡️ [SL Guard] Autonomous Stop-Loss engine active.")
+    print("🛡️ [SL & TP Guard] Autonomous 24/7 background trade monitor active.")
     while True:
         try:
             time.sleep(2.0)
+            # 1. Automatically sync filled TP limit orders directly from Bybit's live trades
+            sync_real_positions_with_bybit()
+
             acc = load_real_positions()
             open_pos = acc.get("openPositions", [])
             if not open_pos:
