@@ -99,27 +99,38 @@ async function fetchMarketPulse() {
         const data = await res.json();
         
         if (data.BTCUSDT) {
-            document.getElementById('btcPrice').innerText = `$${formatPrice(data.BTCUSDT.price)}`;
-            const chgEl = document.getElementById('btcChg');
-            const chg = data.BTCUSDT.chg;
-            chgEl.innerText = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
-            chgEl.className = `pulse-chg ${chg >= 0 ? 'up' : 'down'}`;
+            const btcP = document.getElementById('btcPrice');
+            const btcC = document.getElementById('btcChg');
+            if (btcP) btcP.innerText = `$${formatPrice(data.BTCUSDT.price)}`;
+            if (btcC) {
+                const c = data.BTCUSDT.chg;
+                btcC.innerText = `${c >= 0 ? '+' : ''}${c.toFixed(2)}%`;
+                btcC.className = `pulse-chg ${c >= 0 ? 'up' : 'down'}`;
+            }
         }
         if (data.ETHUSDT) {
-            document.getElementById('ethPrice').innerText = `$${formatPrice(data.ETHUSDT.price)}`;
-            const chgEl = document.getElementById('ethChg');
-            const chg = data.ETHUSDT.chg;
-            chgEl.innerText = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
-            chgEl.className = `pulse-chg ${chg >= 0 ? 'up' : 'down'}`;
+            const ethP = document.getElementById('ethPrice');
+            const ethC = document.getElementById('ethChg');
+            if (ethP) ethP.innerText = `$${formatPrice(data.ETHUSDT.price)}`;
+            if (ethC) {
+                const c = data.ETHUSDT.chg;
+                ethC.innerText = `${c >= 0 ? '+' : ''}${c.toFixed(2)}%`;
+                ethC.className = `pulse-chg ${c >= 0 ? 'up' : 'down'}`;
+            }
         }
         if (data.SOLUSDT) {
-            document.getElementById('solPrice').innerText = `$${formatPrice(data.SOLUSDT.price)}`;
-            const chgEl = document.getElementById('solChg');
-            const chg = data.SOLUSDT.chg;
-            chgEl.innerText = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
-            chgEl.className = `pulse-chg ${chg >= 0 ? 'up' : 'down'}`;
+            const solP = document.getElementById('solPrice');
+            const solC = document.getElementById('solChg');
+            if (solP) solP.innerText = `$${formatPrice(data.SOLUSDT.price)}`;
+            if (solC) {
+                const c = data.SOLUSDT.chg;
+                solC.innerText = `${c >= 0 ? '+' : ''}${c.toFixed(2)}%`;
+                solC.className = `pulse-chg ${c >= 0 ? 'up' : 'down'}`;
+            }
         }
-    } catch (e) {}
+    } catch (e) {
+        console.warn('Market pulse error:', e);
+    }
 }
 
 // Fetch Latest Scan Results
@@ -2149,7 +2160,6 @@ async function fetchRealPositions() {
             }
 
             // History KPIs
-            const histList = data.history || [];
             const sumPnl = histList.reduce((acc, h) => acc + (parseFloat(h.realizedPnL) || 0), 0);
             const stats = data.stats || {};
             const rPnl = (stats.totalRealizedPnL !== undefined && stats.totalRealizedPnL !== null) ? stats.totalRealizedPnL : sumPnl;
