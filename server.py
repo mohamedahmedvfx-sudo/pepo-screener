@@ -743,10 +743,117 @@ def save_real_positions(data):
     except Exception as e:
         print(f"Error saving real positions: {e}")
 
+_LAST_BYBIT_SYNC = 0
+
+def sync_real_positions_with_bybit():
+    global _LAST_BYBIT_SYNC
+    now = time.time()
+    # Cache sync every 4 seconds to be gentle on Bybit rate limits
+    if now - _LAST_BYBIT_SYNC < 4:
+        return
+    _LAST_BYBIT_SYNC = now
+    
+    cfg = load_bybit_config()
+    if not cfg:
+        return
+
+    try:
+        res = bybit_signed_request("GET", "/v5/execution/list", params={"category": "spot", "limit": "20"})
+        if res.get("retCode") != 0:
+            return
+            
+        exec_list = res.get("result", {}).get("list", [])
+        if not exec_list:
+            return
+
+        acc = load_real_positions()
+        open_pos = acc.get("openPositions", [])
+        history = acc.get("history", [])
+        changed = False
+
+        recorded_exec_ids = set()
+        for h in history:
+            if h.get("execId"):
+                recorded_exec_ids.add(h["execId"])
+            if h.get("orderId"):
+                recorded_exec_ids.add(h["orderId"])
+
+        for e in exec_list:
+            if e.get("side") != "Sell":
+                continue
+            exec_id = e.get("execId")
+            order_id = e.get("orderId")
+            if (exec_id and exec_id in recorded_exec_ids) or (order_id and order_id in recorded_exec_ids):
+                continue
+
+            sym = e.get("symbol")
+            exec_price = float(e.get("execPrice", 0) or 0)
+            exec_qty = float(e.get("execQty", 0) or 0)
+            exec_val = float(e.get("execValue", 0) or 0)
+            exec_time_ms = int(e.get("execTime", 0) or 0)
+            closed_at = datetime.fromtimestamp(exec_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S") if exec_time_ms else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            matched_pos = None
+            for p in open_pos:
+                if p.get("symbol") == sym:
+                    matched_pos = p
+                    break
+
+            if matched_pos and exec_qty > 0 and exec_price > 0:
+                entry_price = float(matched_pos.get("entryPrice", exec_price))
+                cost = round(exec_qty * entry_price, 2)
+                pnl = round(exec_val - cost, 2)
+                pnl_pct = round(((exec_price - entry_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
+
+                tp2_target = float(matched_pos.get("tp2", 0) or 0)
+                is_tp2 = tp2_target > 0 and abs(exec_price - tp2_target) / tp2_target < 0.02
+                exit_reason = f"تحقيق الهدف الثاني (TP2: ${exec_price}) وتسييل الصفقة 🎯🚀" if is_tp2 else f"تحقيق الهدف الأول (TP1: ${exec_price}) | بيع 50% وتأمين الدخول 🎯"
+
+                hist_entry = {
+                    "id": f"{matched_pos.get('id')}-{order_id or int(now)}",
+                    "execId": exec_id,
+                    "orderId": order_id,
+                    "symbol": sym,
+                    "baseCoin": matched_pos.get("baseCoin", sym.replace("USDT", "")),
+                    "entryPrice": entry_price,
+                    "closePrice": exec_price,
+                    "qty": exec_qty,
+                    "amountUsdt": cost,
+                    "netReturn": round(exec_val, 2),
+                    "realizedPnL": pnl,
+                    "pnlPct": pnl_pct,
+                    "exitReason": exit_reason,
+                    "closedAt": closed_at
+                }
+                history.insert(0, hist_entry)
+                recorded_exec_ids.add(exec_id or order_id)
+
+                curr_qty = float(matched_pos.get("qty", 0) or 0)
+                remaining_qty = max(0.0, curr_qty - exec_qty)
+                if remaining_qty <= 0.001 or is_tp2:
+                    open_pos.remove(matched_pos)
+                else:
+                    matched_pos["qty"] = round(remaining_qty, 4)
+                    matched_pos["amountUsdt"] = round(max(0.0, float(matched_pos.get("amountUsdt", 0)) - cost), 2)
+                    matched_pos["tp1Executed"] = True
+                    matched_pos["tp1LockedPnL"] = pnl
+                    matched_pos["sl"] = entry_price
+                    matched_pos["setupName"] = f"صفقة حقيقية Bybit (تحقق الهدف الأول 🎯)"
+                changed = True
+
+        if changed:
+            acc["openPositions"] = open_pos
+            acc["history"] = history
+            save_real_positions(acc)
+    except Exception as ex:
+        print(f"⚠️ Error syncing Bybit real executions: {ex}")
+
 def get_real_positions_summary():
+    sync_real_positions_with_bybit()
     acc = load_real_positions()
     open_pos = acc.get("openPositions", [])
     history = acc.get("history", [])
+
     
     if open_pos:
         tickers = get_all_spot_tickers_cached(ttl=2.0)
