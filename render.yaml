@@ -12,4 +12,8 @@ services:
         value: 0.0.0.0
       - key: PYTHONUNBUFFERED
         value: 1
+      - key: BYBIT_API_KEY
+        value: "10TSpdK1sHGhhPXkKs"
+      - key: BYBIT_API_SECRET
+        value: "OXpQhZQPGY19EBl3s9QFISiKbPZZio5UVe6m"
 
