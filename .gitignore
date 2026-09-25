@@ -1,0 +1,14 @@
+# Sensitive Bybit API Keys (CRITICAL for Public Repos)
+config.json
+bybit_config.json
+.env
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs & temp
+*.log
+scratch/
+.system_generated/

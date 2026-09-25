@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bybit Spot AI Screener Pro | رادار الصفقات الفورية الذكي</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600;700;800&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=5">
+    <!-- TradingView Embed Widget & Lightweight Charts Local -->
+    <script type="text/javascript" src="lightweight-charts.js"></script>
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+</head>
+<body>
+
+    <!-- Ambient Glow Effects -->
+    <div class="ambient-glow glow-cyan"></div>
+    <div class="ambient-glow glow-gold"></div>
+
+    <!-- App Header -->
+    <header class="app-header">
+        <div class="header-container">
+            <div class="brand-group">
+                <div class="brand-icon">
+                    <span class="pulse-ring"></span>
+                    <span class="icon-emoji">⚡</span>
+                </div>
+                <div class="brand-titles">
+                    <h1>Bybit Spot AI Screener <span class="badge-pro">PRO</span></h1>
+                    <span class="brand-desc">رادار التحليل الفني واقتناص صفقات الفوري اللحظية</span>
+                </div>
+            </div>
+
+            <!-- Top Actions & Wallet Bar -->
+            <div class="header-actions">
+                <!-- Mode Switcher (Live vs Demo) -->
+                <div class="mode-switcher-container" title="التبديل بين التداول التجريبي الافتراضي والتداول الحقيقي">
+                    <button type="button" class="mode-switch-btn active" id="modeSwitchDemo" onclick="switchTradingMode('demo')" title="وضع المحاكاة التجريبي برصيد افتراضي ومحاكاة حية">
+                        <span class="mode-indicator green"></span>
+                        <span class="mode-text">محاكاة تجريبية 🎮</span>
+                    </button>
+                    <button type="button" class="mode-switch-btn" id="modeSwitchLive" onclick="switchTradingMode('live')" title="وضع التداول الحقيقي المباشر على Bybit">
+                        <span class="mode-indicator red"></span>
+                        <span class="mode-text">حساب حقيقي 🔴</span>
+                    </button>
+                </div>
+
+                <!-- Wallet Widget (Dynamic for Demo / Live) -->
+                <div class="wallet-header-widget demo-mode-active" id="walletHeaderWidget" onclick="handleWalletWidgetClick()" title="انقر لعرض تفاصيل المحفظة والرصيد">
+                    <span class="wallet-icon-badge" id="walletWidgetIcon">🎮</span>
+                    <div class="wallet-text-block">
+                        <div class="wallet-label-row">
+                            <span class="wallet-title" id="walletWidgetTitle">المحفظة التجريبية (Demo):</span>
+                            <span class="wallet-status-dot green" id="accountStatusDot"></span>
+                        </div>
+                        <div class="wallet-equity mono" id="headerTotalEquity">$10,000.00</div>
+                        <div class="wallet-available mono" id="headerAvailableUsdt">USDT تجريبي متاح: $10,000.00</div>
+                    </div>
+                </div>
+
+                <!-- Account Management Buttons -->
+                <div class="account-btn-group">
+                    <button type="button" class="btn-account-nav btn-real-nav active-real" id="btnOpenRealModal" onclick="openRealModal()" title="إدارة ومتابعة الصفقات الحقيقية المفتوحة على Bybit وعرض مستويات الدخول والأهداف على الشارت">
+                        <span>🔴</span>
+                        <span>صفقاتي الحقيقية</span>
+                        <span class="orders-count-badge red-badge" id="realTradesCountBadge" style="display:inline-flex;">1</span>
+                    </button>
+                    <button type="button" class="btn-account-nav btn-demo-nav active-demo" id="btnOpenDemoModal" onclick="openDemoModal()" title="إدارة المحفظة التجريبية ومتابعة صفقات المحاكاة الحية">
+                        <span>🎮</span>
+                        <span>صفقات المحاكاة</span>
+                        <span class="orders-count-badge green-badge" id="demoTradesCountBadge" style="display:none;">0</span>
+                    </button>
+                    <button type="button" class="btn-account-nav" onclick="openHoldingsModal()" title="عرض تفاصيل العملات المملوكة في محفظة Bybit الحقيقية">
+                        <span>💼</span>
+                        <span>محفظتي الحقيقية</span>
+                    </button>
+                    <button type="button" class="btn-account-nav" onclick="openOrdersModal()" title="عرض ومتابعة الأوامر المفتوحة على Bybit">
+                        <span>📜</span>
+                        <span>أوامري الحقيقية</span>
+                        <span class="orders-count-badge" id="openOrdersBadge" style="display:none;">0</span>
+                    </button>
+                    <button type="button" class="btn-account-nav" onclick="openApiModal()" title="إعدادات مفاتيح Bybit API">
+                        <span class="status-pulse-dot green" id="apiDot"></span>
+                        <span id="apiKeyStatusText">Bybit V5</span>
+                    </button>
+                </div>
+
+                <button type="button" class="btn-sound-toggle active" id="soundToggleBtn" onclick="toggleSoundAlert()" title="تفعيل/تعطيل التنبيه الصوتي عند اكتشاف صفقات ذهبية">
+                    <span id="soundIcon">🔔</span>
+                    <span id="soundLabel">صوت التنبيه: مفعّل</span>
+                </button>
+                <button type="button" class="btn-scan-main" id="scanMainBtn" onclick="triggerScan()">
+                    <span class="scan-icon">🚀</span>
+                    <span id="scanBtnText">فحص السوق اللحظي</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Market Pulse Bar -->
+        <div class="market-pulse-bar">
+            <div class="pulse-container">
+                <div class="pulse-chip" id="btcChip">
+                    <span class="pulse-sym">BTC:</span>
+                    <span class="pulse-val mono" id="btcPrice">--</span>
+                    <span class="pulse-chg" id="btcChg">--%</span>
+                </div>
+                <div class="pulse-chip" id="ethChip">
+                    <span class="pulse-sym">ETH:</span>
+                    <span class="pulse-val mono" id="ethPrice">--</span>
+                    <span class="pulse-chg" id="ethChg">--%</span>
+                </div>
+                <div class="pulse-chip" id="solChip">
+                    <span class="pulse-sym">SOL:</span>
+                    <span class="pulse-val mono" id="solPrice">--</span>
+                    <span class="pulse-chg" id="solChg">--%</span>
+                </div>
+                <div class="pulse-separator"></div>
+                <div class="pulse-stat">
+                    <span class="stat-label">أزواج الفحص:</span>
+                    <b class="stat-num mono" id="statScannedCount">0</b>
+                </div>
+                <div class="pulse-stat">
+                    <span class="stat-label">الصفقات المؤكدة:</span>
+                    <b class="stat-num mono text-green" id="statRecommendedCount">0</b>
+                </div>
+                <div class="pulse-stat">
+                    <span class="stat-label">آخر تحديث:</span>
+                    <span class="stat-time mono" id="statLastScan">--</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main App Body -->
+    <main class="app-main">
+        <!-- Filter Controls Bar -->
+        <section class="controls-section">
+            <div class="filter-pills-group">
+                <button type="button" class="filter-pill active" data-filter="all" onclick="setFilter('all')">
+                    🌟 جميع الصفقات (<span id="countAll">0</span>)
+                </button>
+                <button type="button" class="filter-pill" data-filter="VOLUME_BREAKOUT" onclick="setFilter('VOLUME_BREAKOUT')">
+                    🚀 اختراق وزخم سيولة (<span id="countBreakout">0</span>)
+                </button>
+                <button type="button" class="filter-pill" data-filter="TREND_PULLBACK" onclick="setFilter('TREND_PULLBACK')">
+                    📈 ارتداد ترند صاعد (<span id="countPullback">0</span>)
+                </button>
+                <button type="button" class="filter-pill" data-filter="OVERSOLD_BOUNCE" onclick="setFilter('OVERSOLD_BOUNCE')">
+                    💎 ارتداد قاع وتشبع (<span id="countOversold">0</span>)
+                </button>
+                <button type="button" class="filter-pill" data-filter="BULLISH_DIVERGENCE" onclick="setFilter('BULLISH_DIVERGENCE')">
+                    🔄 انفراج إيجابي (<span id="countDivergence">0</span>)
+                </button>
+            </div>
+
+            <!-- Timeframe & Search Group -->
+            <div class="aux-controls-group">
+                <div class="search-box">
+                    <input type="text" id="coinSearchInput" placeholder="ابحث عن عملة (مثل SOL, MON)..." oninput="handleLocalSearch()">
+                    <span class="search-clear" onclick="clearSearch()">✖</span>
+                </div>
+                <div class="timeframe-select-box">
+                    <label>فريم الشموع:</label>
+                    <select id="timeframeSelect" onchange="onTimeframeChange()">
+                        <option value="240" selected>4 ساعات (240m) - موصى به للسبوت ⭐</option>
+                        <option value="60">1 ساعة (60m) - صفقات سريعة</option>
+                        <option value="D">يومي (1D) - موجات استثمارية</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <!-- Notification Toast -->
+        <div id="toastMessage" class="toast-message hidden"></div>
+
+        <!-- Cards Grid -->
+        <section class="grid-section">
+            <div id="cardsGrid" class="cards-grid">
+                <!-- Dynamically populated -->
+                <div class="loading-state">
+                    <div class="spinner"></div>
+                    <p>جاري سحب وفحص صفقات السوق اللحظية من منصة Bybit...</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Chart Modal (Interactive Analysis & Levels View) -->
+    <div id="chartModal" class="modal-overlay hidden">
+        <div class="modal-container chart-modal-container">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="m-icon">📊</span>
+                    <div>
+                        <h3 id="modalChartTitle">رسم بياني مباشر مع خطوط الدخول والأهداف | BYBIT:BTCUSDT</h3>
+                        <span class="m-sub" id="modalChartSubtitle">خط سعر الدخول (Cyan) | أهداف جني الأرباح TP (أخضر) | وقف الخسارة SL (أحمر)</span>
+                    </div>
+                </div>
+                <div class="chart-header-actions">
+                    <div class="chart-tab-switcher">
+                        <button type="button" class="btn-chart-mode active" id="btnChartModeLevels" onclick="switchChartMode('levels')">
+                            <span>🎯 شارت مستويات الصفقة</span>
+                        </button>
+                        <button type="button" class="btn-chart-mode" id="btnChartModeTv" onclick="switchChartMode('tv')">
+                            <span>📈 شارت TradingView الكامل</span>
+                        </button>
+                    </div>
+                    <button type="button" class="btn-chart-action-trade" id="btnChartTradeTrigger" onclick="openAssistantFromChart()">
+                        <span>⚡ تنفيذ الصفقة</span>
+                    </button>
+                    <button type="button" class="btn-close-modal" onclick="closeChartModal()">✖</button>
+                </div>
+            </div>
+
+            <!-- Trade Levels Legend Bar (HUD) -->
+            <div class="chart-levels-hud-bar" id="chartLevelsHudBar">
+                <div class="hud-pill hud-entry">
+                    <span class="hud-dot cyan"></span>
+                    <span class="hud-lbl">سعر الدخول:</span>
+                    <span class="hud-val mono" id="hudEntryVal">--</span>
+                </div>
+                <div class="hud-pill hud-tp1">
+                    <span class="hud-dot green"></span>
+                    <span class="hud-lbl">هدف TP1:</span>
+                    <span class="hud-val mono" id="hudTp1Val">--</span>
+                </div>
+                <div class="hud-pill hud-tp2">
+                    <span class="hud-dot green"></span>
+                    <span class="hud-lbl">هدف TP2:</span>
+                    <span class="hud-val mono" id="hudTp2Val">--</span>
+                </div>
+                <div class="hud-pill hud-tp3">
+                    <span class="hud-dot green"></span>
+                    <span class="hud-lbl">هدف TP3:</span>
+                    <span class="hud-val mono" id="hudTp3Val">--</span>
+                </div>
+                <div class="hud-pill hud-sl">
+                    <span class="hud-dot red"></span>
+                    <span class="hud-lbl">وقف الخسارة SL:</span>
+                    <span class="hud-val mono" id="hudSlVal">--</span>
+                </div>
+                <div class="hud-pill hud-rr">
+                    <span class="hud-lbl">عائد المخاطرة (R:R):</span>
+                    <span class="hud-val mono text-gold" id="hudRrVal">--</span>
+                </div>
+            </div>
+
+            <div class="modal-chart-body" id="modalChartContainer">
+                <div id="levelsChartContainer" style="width:100%; height:540px; position:relative;">
+                    <div class="chart-loading-overlay" id="chartLoadingOverlay">
+                        <div class="spinner"></div>
+                        <span>جاري رسم الشموع وخطوط الصفقة من Bybit...</span>
+                    </div>
+                </div>
+                <div id="tvChartContainer" style="width:100%; height:540px; display:none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Smart Trading Assistant Modal (Bybit Spot Assistant Pro) -->
+    <div id="tradingAssistantModal" class="modal-overlay hidden">
+        <div class="modal-container assistant-modal-container">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="m-icon">⚡</span>
+                    <div>
+                        <h3 id="assistantTitle">مساعد التداول الذكي | Bybit Spot Assistant</h3>
+                        <span class="m-sub">تنفيذ فوري مباشر عبر Bybit V5 API مع حاسبة رأس المال والأرباح</span>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-modal" onclick="closeTradingAssistant()">✖</button>
+            </div>
+
+            <div class="assistant-modal-body">
+                <!-- Trading Mode Indicator Banner -->
+                <div class="assistant-mode-banner demo" id="assistantModeBanner">
+                    <div class="amb-content">
+                        <span class="amb-icon" id="ambIcon">🎮</span>
+                        <div class="amb-info">
+                            <span class="amb-title" id="ambTitle">وضع التداول التجريبي الافتراضي (Paper Trading):</span>
+                            <span class="amb-desc" id="ambDesc">يتم الدخول بالصفقة وفق السعر اللحظي الحقيقي وخصم الرسوم التقديرية (0.10%) دون المخاطرة بأي رصيد حقيقي.</span>
+                        </div>
+                    </div>
+                    <button type="button" class="btn-amb-switch" id="btnAmbSwitch" onclick="toggleTradingModeFromModal()">تبديل للحقيقي 🔴</button>
+                </div>
+
+                <!-- Selected Coin Identity Banner -->
+                <div class="assistant-coin-banner">
+                    <div class="acb-left">
+                        <span class="acb-symbol mono" id="tradeSymbol">SOLUSDT</span>
+                        <span class="acb-setup-tag" id="tradeSetupTag">🚀 اختراق وزخم</span>
+                    </div>
+                    <div class="acb-right">
+                        <span class="acb-price-label">السعر اللحظي:</span>
+                        <span class="acb-price mono" id="tradeCurrentPrice">$0.00</span>
+                        <span class="acb-score" id="tradeScoreBadge">⭐ 90%</span>
+                    </div>
+                </div>
+
+                <!-- Targets Bar -->
+                <div class="assistant-targets-bar">
+                    <div class="atb-item entry">
+                        <span class="atb-lbl">الدخول المقترح</span>
+                        <span class="atb-val mono" id="tradeEntryVal">--</span>
+                    </div>
+                    <div class="atb-item tp1">
+                        <span class="atb-lbl">الهدف الأول (TP1)</span>
+                        <span class="atb-val mono" id="tradeTp1Val">--</span>
+                    </div>
+                    <div class="atb-item tp2">
+                        <span class="atb-lbl">الهدف الثاني (TP2)</span>
+                        <span class="atb-val mono" id="tradeTp2Val">--</span>
+                    </div>
+                    <div class="atb-item tp3">
+                        <span class="atb-lbl">الهدف الثالث (TP3)</span>
+                        <span class="atb-val mono" id="tradeTp3Val">--</span>
+                    </div>
+                    <div class="atb-item sl">
+                        <span class="atb-lbl">وقف الخسارة (SL)</span>
+                        <span class="atb-val mono" id="tradeSlVal">--</span>
+                    </div>
+                </div>
+
+                <!-- Action Button to Open Chart with Levels -->
+                <div class="assistant-chart-shortcut-bar">
+                    <button type="button" class="btn-open-chart-from-assistant" onclick="openChartFromAssistant()">
+                        <span>📊 شاهد الشارت المباشر ومستويات الصفقة (الدخول + الأهداف + الستوب)</span>
+                    </button>
+                </div>
+
+                <!-- Order Config Form -->
+                <div class="assistant-form-grid">
+                    <!-- Order Type Selector -->
+                    <div class="form-group full-width">
+                        <label class="form-label">نوع أمر الشراء:</label>
+                        <div class="order-type-tabs">
+                            <button type="button" class="order-type-tab active" id="orderTypeMarket" onclick="setOrderType('Market')">
+                                <span>⚡ شراء فوري بسعر السوق (Market Buy)</span>
+                            </button>
+                            <button type="button" class="order-type-tab" id="orderTypeLimit" onclick="setOrderType('Limit')">
+                                <span>🎯 أمر معلق بسعر الدخول (Limit Buy)</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Limit Price Input (Hidden if Market) -->
+                    <div class="form-group full-width" id="limitPriceGroup" style="display:none;">
+                        <label class="form-label">سعر الشراء المحدد (Limit Price بالدولار):</label>
+                        <div class="input-with-affix">
+                            <span class="affix">$</span>
+                            <input type="number" id="tradeLimitPrice" step="any" placeholder="سعر الدخول المحدد..." oninput="calculateTradeReturns()">
+                        </div>
+                    </div>
+
+                    <!-- Amount Selection -->
+                    <div class="form-group full-width">
+                        <div class="form-label-row">
+                            <label class="form-label">المبلغ المستثمر في الصفقة (USDT):</label>
+                            <span class="wallet-avail-text" id="tradeWalletAvail">USDT متاح في المحفظة: $0.00</span>
+                        </div>
+                        <div class="quick-amounts-chips">
+                            <button type="button" class="amount-chip" onclick="setTradeAmount(10)">$10</button>
+                            <button type="button" class="amount-chip active" onclick="setTradeAmount(25)">$25</button>
+                            <button type="button" class="amount-chip" onclick="setTradeAmount(50)">$50</button>
+                            <button type="button" class="amount-chip" onclick="setTradeAmount(100)">$100</button>
+                            <button type="button" class="amount-chip" onclick="setTradeAmountMax()">أقصى رصيد USDT</button>
+                        </div>
+                        <div class="input-with-affix">
+                            <span class="affix">USDT</span>
+                            <input type="number" id="tradeAmountInput" value="25" min="1" step="any" placeholder="اكتب المبلغ بالدولار..." oninput="calculateTradeReturns()">
+                        </div>
+                    </div>
+
+                    <!-- Take Profit Strategy Selection -->
+                    <div class="form-group full-width">
+                        <label class="form-label">🎯 استراتيجية جني الأرباح واستهداف الأهداف:</label>
+                        <div class="tp-strategy-grid">
+                            <button type="button" class="tp-strat-card" id="tpStrat1" onclick="setTpStrategy('TP1')">
+                                <div class="tps-header">
+                                    <span class="tps-badge">الهدف الأول فقط</span>
+                                    <span class="tps-ratio mono">100%</span>
+                                </div>
+                                <div class="tps-sub">خروج كامل سريع عند TP1 لتأمين الأرباح فوراً وتفادي الارتداد</div>
+                            </button>
+
+                            <button type="button" class="tp-strat-card active" id="tpStrat2" onclick="setTpStrategy('TP1_TP2')">
+                                <div class="tps-header">
+                                    <span class="tps-badge">الهدف 1 + الهدف 2 ⭐</span>
+                                    <span class="tps-ratio mono">50% / 50%</span>
+                                </div>
+                                <div class="tps-sub">تأمين نصف الصفقة عند TP1 وإكمال الباقي للهدف الرئيسي TP2</div>
+                            </button>
+
+                            <button type="button" class="tp-strat-card" id="tpStrat3" onclick="setTpStrategy('TP1_TP2_TP3')">
+                                <div class="tps-header">
+                                    <span class="tps-badge">جميع الأهداف (1+2+3)</span>
+                                    <span class="tps-ratio mono">33% / 33% / 34%</span>
+                                </div>
+                                <div class="tps-sub">جني الأرباح على 3 مراحل لاقتناص كامل الموجة الصاعدة الكبرى</div>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Profit & Loss Scenarios Card -->
+                    <div class="trade-calcs-card full-width">
+                        <div class="calc-header">
+                            <span>📊 محاكاة العائد المتوقع وإدارة المخاطرة:</span>
+                            <span class="coins-estimate mono" id="calcEstCoins">الكمية المقدرة: --</span>
+                        </div>
+                        <div class="calc-grid">
+                            <div class="calc-pill p-tp1" id="pillTp1">
+                                <span class="cp-title">هدف TP1:</span>
+                                <span class="cp-gain mono" id="calcGainTp1">+$0.00</span>
+                                <span class="cp-pct mono" id="calcPctTp1">(+0%)</span>
+                                <span class="cp-share mono" id="calcShareTp1">حصة 50%</span>
+                            </div>
+                            <div class="calc-pill p-tp2" id="pillTp2">
+                                <span class="cp-title">هدف TP2:</span>
+                                <span class="cp-gain mono" id="calcGainTp2">+$0.00</span>
+                                <span class="cp-pct mono" id="calcPctTp2">(+0%)</span>
+                                <span class="cp-share mono" id="calcShareTp2">حصة 50%</span>
+                            </div>
+                            <div class="calc-pill p-tp3" id="pillTp3">
+                                <span class="cp-title">هدف TP3:</span>
+                                <span class="cp-gain mono" id="calcGainTp3">+$0.00</span>
+                                <span class="cp-pct mono" id="calcPctTp3">(+0%)</span>
+                                <span class="cp-share mono" id="calcShareTp3">معطل</span>
+                            </div>
+                            <div class="calc-pill p-sl" id="pillSl">
+                                <span class="cp-title">وقف الخسارة (SL):</span>
+                                <span class="cp-gain mono" id="calcLossSl">-$0.00</span>
+                                <span class="cp-pct mono" id="calcPctSl">(-0%)</span>
+                                <span class="cp-share mono" style="color:var(--red-loss);">100% رأس المال</span>
+                            </div>
+                        </div>
+
+                        <!-- Blended Expected Gain Summary Banner -->
+                        <div class="blended-return-banner">
+                            <div class="brb-left">
+                                <span class="brb-lbl">إجمالي الربح الصافي المتوقع وفق الخطة المختارة:</span>
+                                <span class="brb-plan" id="blendedPlanLabel">خروج 50% عند TP1 و 50% عند TP2</span>
+                            </div>
+                            <div class="brb-right">
+                                <span class="brb-gain mono text-green" id="blendedGainVal">+$0.00 USDT</span>
+                                <span class="brb-pct mono text-green" id="blendedPctVal">(+0.00%)</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Safety Options -->
+                    <div class="safety-options-box full-width">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="chkAutoTp" checked>
+                            <span>تفعيل أهداف جني الأرباح (Take Profit) آلياً</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="chkAutoSl" checked>
+                            <span>تفعيل وقف الخسارة الإلزامي (Stop Loss) لحماية رأس المال</span>
+                        </label>
+                    </div>
+
+                    <!-- Execution Status & Feedback Alert Area -->
+                    <div id="tradeFeedbackBox" class="trade-feedback-box hidden full-width"></div>
+
+                    <!-- CTA Execute Button -->
+                    <div class="full-width">
+                        <button type="button" class="btn-execute-trade btn-demo-mode" id="btnExecuteTrade" onclick="handleExecuteTradeClick()">
+                            <span class="btn-icon" id="btnExecuteIcon">🎮</span>
+                            <span id="btnExecuteText">تنفيذ الصفقة في المحفظة التجريبية (Demo Trade)</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Demo Trading / Paper Wallet Modal -->
+    <div id="demoModal" class="modal-overlay hidden">
+        <div class="modal-container demo-modal-container">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="m-icon">🎮</span>
+                    <div>
+                        <h3>محفظة التداول الافتراضي ومحاكاة حركة السوق الحية</h3>
+                        <span class="m-sub">تداول تجريبي آمن 100% بالأسعار والشموع الحقيقية من Bybit V5</span>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-modal" onclick="closeDemoModal()">✖</button>
+            </div>
+
+            <div class="modal-demo-body">
+                <!-- Top Summary KPI Row -->
+                <div class="demo-kpi-grid">
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">إجمالي قيمة المحفظة (Equity):</span>
+                        <div class="dk-val mono text-gold" id="demoTotalEquity">$10,000.00</div>
+                        <span class="dk-sub mono" id="demoInitialBalText">رأس المال المبدئي: $10,000.00</span>
+                    </div>
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">كاش USDT المتاح للتداول:</span>
+                        <div class="dk-val mono text-green" id="demoAvailableUsdt">$10,000.00</div>
+                        <span class="dk-sub">جاهز لفتح صفقات جديدة</span>
+                    </div>
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">نسبة نجاح الصفقات (Win Rate):</span>
+                        <div class="dk-val mono text-cyan" id="demoWinRate">0.0%</div>
+                        <span class="dk-sub" id="demoWinTradesCount">0 رابحة / 0 إجمالي</span>
+                    </div>
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">صافي الأرباح المحققة (Realized PnL):</span>
+                        <div class="dk-val mono text-green" id="demoRealizedPnl">+$0.00</div>
+                        <span class="dk-sub" id="demoPnlPercent">(+0.00%)</span>
+                    </div>
+                </div>
+
+                <!-- Tabs Navigation -->
+                <div class="demo-tabs-bar">
+                    <button type="button" class="demo-tab-btn active" id="demoTabBtnPositions" onclick="switchDemoTab('positions')">
+                        <span>📊 الصفقات المفتوحة والمحاكاة الحية</span>
+                        <span class="demo-badge-count" id="badgeOpenPositions">0</span>
+                    </button>
+                    <button type="button" class="demo-tab-btn" id="demoTabBtnHistory" onclick="switchDemoTab('history')">
+                        <span>📜 سجل الصفقات المغلقة (Trading History)</span>
+                        <span class="demo-badge-count" id="badgeHistory">0</span>
+                    </button>
+                    <button type="button" class="demo-tab-btn" id="demoTabBtnReset" onclick="switchDemoTab('reset')">
+                        <span>⚙️ شحن وتصفير المحفظة التجريبية</span>
+                    </button>
+                </div>
+
+                <!-- Tab 1: Open Positions -->
+                <div class="demo-tab-content active" id="demoTabPositions">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding: 4px 6px; flex-wrap:wrap; gap:8px;">
+                        <div style="font-size:12.5px; color:var(--text-secondary); font-weight:600;">
+                            📡 متابعة حركة الأسعار اللحظية للصفقات المفتوحة وإغلاق الأهداف والاستوب تلقائياً
+                        </div>
+                        <div class="demo-live-badge">
+                            <span class="pulse-radar-dot"></span>
+                            <span>بث حي مباشر من منصة Bybit (تحديث كل ثانيتين)</span>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="demo-table">
+                            <thead>
+                                <tr>
+                                    <th>العملة / الاستراتيجية</th>
+                                    <th>سعر الدخول</th>
+                                    <th>السعر اللحظي الحالي</th>
+                                    <th>المبلغ المستثمر</th>
+                                    <th>الكمية المقدرة</th>
+                                    <th>الأهداف ووقف الخسارة</th>
+                                    <th>الربح/الخسارة اللحظية (PnL)</th>
+                                    <th>الإجراء</th>
+                                </tr>
+                            </thead>
+                            <tbody id="demoPositionsTableBody">
+                                <tr>
+                                    <td colspan="8" style="text-align:center; padding: 30px; color: var(--text-dim);">
+                                        لا توجد صفقات محاكاة مفتوحة حالياً. يمكنك فتح صفقة تجريبية مباشرة من أي كارت عملة في الفاحص! 🚀
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Tab 2: History -->
+                <div class="demo-tab-content" id="demoTabHistory" style="display:none;">
+                    <div class="table-responsive">
+                        <table class="demo-table">
+                            <thead>
+                                <tr>
+                                    <th>العملة</th>
+                                    <th>سعر الدخول</th>
+                                    <th>سعر الخروج</th>
+                                    <th>المبلغ المستثمر</th>
+                                    <th>العائد الصافي</th>
+                                    <th>الربح/الخسارة الصافية</th>
+                                    <th>سبب الخروج</th>
+                                    <th>التاريخ والوقت</th>
+                                </tr>
+                            </thead>
+                            <tbody id="demoHistoryTableBody">
+                                <tr>
+                                    <td colspan="8" style="text-align:center; padding: 30px; color: var(--text-dim);">
+                                        سجل الصفقات فارغ حالياً. الصفقات المغلقة ستظهر هنا مع تفاصيل الأرباح ونسب العائد.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Tab 3: Reset & Top-up -->
+                <div class="demo-tab-content" id="demoTabReset" style="display:none;">
+                    <div class="demo-reset-box">
+                        <div class="reset-intro">
+                            <span class="ri-icon">💰</span>
+                            <div>
+                                <h4>إعادة شحن وتحديد رصيد المحفظة التجريبية</h4>
+                                <p>يمكنك في أي وقت تصفير رصيدك التجريبي، أو شحنه بالمبلغ الذي ترغب به لاختبار استراتيجيتك وكأنك تتداول برأس مالك الحقيقي المستهدف.</p>
+                            </div>
+                        </div>
+
+                        <div class="quick-topup-row">
+                            <label>اختر رصيداً سريعاً:</label>
+                            <div class="quick-topup-chips">
+                                <button type="button" class="topup-chip" onclick="setResetAmountInput(1000)">$1,000 USDT</button>
+                                <button type="button" class="topup-chip" onclick="setResetAmountInput(5000)">$5,000 USDT</button>
+                                <button type="button" class="topup-chip active" onclick="setResetAmountInput(10000)">$10,000 USDT</button>
+                                <button type="button" class="topup-chip" onclick="setResetAmountInput(25000)">$25,000 USDT</button>
+                                <button type="button" class="topup-chip" onclick="setResetAmountInput(50000)">$50,000 USDT</button>
+                            </div>
+                        </div>
+
+                        <div class="form-group" style="margin-top: 15px;">
+                            <label class="form-label">أو أدخل رصيد مخصص (بالدولار USDT):</label>
+                            <div class="input-with-affix">
+                                <span class="affix">USDT</span>
+                                <input type="number" id="inputCustomResetAmount" value="10000" min="10" step="any" placeholder="المبلغ المطلوب...">
+                            </div>
+                        </div>
+
+                        <div class="reset-options-row">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="chkClearHistory">
+                                <span>مسح سجل الصفقات المغلقة السابقة والبدء من جديد بسجل نظيف</span>
+                            </label>
+                        </div>
+
+                        <div class="reset-actions-row">
+                            <button type="button" class="btn-confirm-reset" onclick="confirmResetDemoBalance()">
+                                <span>🔄 تطبيق وإعادة شحن الرصيد التجريبي</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Real Positions Modal (صفقاتي الحقيقية على Bybit) -->
+    <div id="realPositionsModal" class="modal-overlay hidden">
+        <div class="modal-container real-modal-container">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="m-icon">🔴</span>
+                    <div>
+                        <h3>صفقاتي الحقيقية المفتوحة على Bybit | Live Positions Tracker</h3>
+                        <span class="m-sub">متابعة الأرباح اللحظية الحقيقية والشارت التفاعلي بمستويات الدخول والأهداف</span>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-modal" onclick="closeRealModal()">✖</button>
+            </div>
+            <div class="modal-demo-body">
+                <!-- Summary KPIs -->
+                <div class="demo-kpi-grid">
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">رأس المال المستثمر بالصفقات:</span>
+                        <span class="dk-val mono text-gold" id="realTotalInvested">$0.00 USDT</span>
+                    </div>
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">القيمة السوقية اللحظية:</span>
+                        <span class="dk-val mono" id="realTotalValue">$0.00 USDT</span>
+                    </div>
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">الربح/الخسارة اللحظية الإجمالية (PnL):</span>
+                        <span class="dk-val mono font-bold" id="realTotalPnL">$0.00</span>
+                    </div>
+                </div>
+
+                <!-- Open Real Positions Content -->
+                <div class="demo-tab-content active" id="realTabPositions">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding: 4px 6px; flex-wrap:wrap; gap:8px;">
+                        <div style="font-size:12.5px; color:var(--text-secondary); font-weight:600;">
+                            📡 متابعة حركة الأسعار اللحظية لصفقاتك الحقيقية وعرض أهداف الدخول والـ TP والستوب على الشارت
+                        </div>
+                        <div class="real-live-badge">
+                            <span class="pulse-radar-dot"></span>
+                            <span>متصل مباشرة بمحفظة Bybit الحقيقية</span>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="demo-table">
+                            <thead>
+                                <tr>
+                                    <th>العملة / الاستراتيجية</th>
+                                    <th>سعر الدخول</th>
+                                    <th>السعر اللحظي الحالي</th>
+                                    <th>المبلغ المستثمر</th>
+                                    <th>الكمية المملوكة</th>
+                                    <th>الأهداف ووقف الخسارة</th>
+                                    <th>الربح/الخسارة اللحظية (PnL)</th>
+                                    <th>الإجراءات والشارت</th>
+                                </tr>
+                            </thead>
+                            <tbody id="realPositionsTableBody">
+                                <tr>
+                                    <td colspan="8" style="text-align:center; padding: 30px; color: var(--text-dim);">
+                                        جاري جلب الصفقات الحقيقية...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Holdings & Wallet Modal -->
+    <div id="holdingsModal" class="modal-overlay hidden">
+        <div class="modal-container medium-modal">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="m-icon">💼</span>
+                    <div>
+                        <h3>محفظتي الحية في Bybit | Unified Trading Account</h3>
+                        <span class="m-sub" id="holdingsSubtitle">تفاصيل العملات المملوكة والأرصدة اللحظية</span>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-modal" onclick="closeHoldingsModal()">✖</button>
+            </div>
+            <div class="modal-holdings-body">
+                <div class="holdings-summary-row">
+                    <div class="hs-card">
+                        <span class="hs-lbl">إجمالي قيمة المحفظة (Total Equity):</span>
+                        <span class="hs-val mono text-gold" id="holdingsTotalEquity">$0.00</span>
+                    </div>
+                    <div class="hs-card">
+                        <span class="hs-lbl">رصيد USDT المتاح للتداول:</span>
+                        <span class="hs-val mono text-green" id="holdingsUsdtAvailable">$0.00</span>
+                    </div>
+                </div>
+
+                <div class="holdings-table-container">
+                    <table class="holdings-table">
+                        <thead>
+                            <tr>
+                                <th>العملة</th>
+                                <th>الرصيد الإجمالي</th>
+                                <th>المتاح للتداول</th>
+                                <th>القيمة بالدولار (USD)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingsTableBody">
+                            <tr>
+                                <td colspan="4" style="text-align:center; padding: 20px; color: var(--text-dim);">جاري تحميل محتويات المحفظة...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Open Orders Modal -->
+    <div id="openOrdersModal" class="modal-overlay hidden">
+        <div class="modal-container medium-modal">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="m-icon">📜</span>
+                    <div>
+                        <h3>الأوامر المفتوحة والمعلقة على Bybit Spot</h3>
+                        <span class="m-sub">متابعة صفقاتك المعلقة وإلغاؤها مباشرة بنقرة زر</span>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-modal" onclick="closeOrdersModal()">✖</button>
+            </div>
+            <div class="modal-orders-body">
+                <div id="openOrdersListContainer">
+                    <div class="loading-state">
+                        <div class="spinner"></div>
+                        <p>جاري جلب الأوامر المفتوحة من منصة Bybit...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Settings Modal -->
+    <div id="apiModal" class="modal-overlay hidden">
+        <div class="modal-container small-modal">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="m-icon">🔑</span>
+                    <div>
+                        <h3>إعدادات ربط Bybit API الرسمي</h3>
+                        <span class="m-sub">الاتصال المشفر المباشر مع حساب Bybit V5</span>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-modal" onclick="closeApiModal()">✖</button>
+            </div>
+            <div class="modal-api-body">
+                <div class="api-info-note">
+                    🔒 المفاتيح تُحفظ محلياً على جهازك في <code>config.json</code> ويتم توقيع الصفقات عبر التشفير القياسي <b>HMAC-SHA256</b> دون مشاركة المفتاح السري مع أي طرف خارجي.
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Bybit API Key:</label>
+                    <input type="text" id="inputApiKey" placeholder="أدخل الـ API Key..." autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Bybit API Secret:</label>
+                    <input type="password" id="inputApiSecret" placeholder="أدخل الـ API Secret..." autocomplete="off">
+                </div>
+                <div id="apiFeedbackMsg" class="api-feedback-msg hidden"></div>
+                <div class="modal-actions-row">
+                    <button type="button" class="btn-save-api" onclick="saveApiKeys()">
+                        <span>💾 حفظ وتفعيل الربط</span>
+                    </button>
+                    <button type="button" class="btn-cancel-api" onclick="closeApiModal()">إلغاء</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- App Footer -->
+    <footer class="app-footer">
+        <div class="footer-container">
+            <span>Bybit Spot AI Screener Pro &copy; استوديو المشاريع الكبرى للمخرج ورائد الأعمال أستاذ محمد</span>
+            <span class="disclaimer">جميع التحليلات هي قراءات فنية ورياضية للمؤشرات ونماذج الأسعار. إدارة رأس المال والالتزام بوقف الخسارة هما سر النجاح.</span>
+        </div>
+    </footer>
+
+    <!-- App Logic -->
+    <script src="app.js?v=5"></script>
+</body>
+</html>
