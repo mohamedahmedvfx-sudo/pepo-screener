@@ -10,10 +10,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Environment variables
-ENV PORT=5600
+ENV PORT=7860
 ENV HOST=0.0.0.0
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 5600
+EXPOSE 7860
 
 CMD ["python", "server.py"]

@@ -1,3 +1,13 @@
+---
+title: Pepo Screener
+emoji: ⚡
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # ⚡ Bybit Spot AI Screener Pro & Autonomous Stop-Loss Engine
 
 A high-performance real-time cryptocurrency spot scanner, autonomous trading terminal, and cloud-native Stop-Loss & Take-Profit manager for Bybit V5 API.
