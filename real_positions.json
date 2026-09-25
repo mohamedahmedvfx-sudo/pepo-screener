@@ -79,22 +79,24 @@
       "side": "Buy",
       "orderType": "Market",
       "entryPrice": 0.12423,
-      "currentPrice": 0.12423,
-      "qty": 401.9,
-      "amountUsdt": 50.0,
-      "feePaid": 0.05,
-      "currentValue": 49.99,
-      "unrealizedPnL": 0.0,
-      "unrealizedPnLPct": 0.0,
+      "currentPrice": 0.13118,
+      "qty": 201.0,
+      "amountUsdt": 25.0,
+      "feePaid": 0.025,
+      "currentValue": 26.36,
+      "unrealizedPnL": 1.36,
+      "unrealizedPnLPct": 5.44,
       "tp1": 0.13054,
       "tp2": 0.13786,
       "tp3": 0.15167,
-      "sl": 0.12139,
-      "setupName": "صفقة حقيقية Bybit",
+      "sl": 0.12423,
+      "tp1Executed": true,
+      "tp1LockedPnL": 1.26,
+      "setupName": "صفقة حقيقية Bybit (تحقق الهدف الأول 🎯)",
       "openedAt": "2026-09-25 17:50:12",
       "status": "OPEN",
       "orderId": "2311999439361108736",
-      "tpOrderId": "2312035112596105984, 2312035119575427840"
+      "tpOrderId": "2312035119575427840"
     },
     {
       "id": "REAL-1790346524-XAIU",
@@ -147,6 +149,21 @@
       "tpOrderId": "2312035137694821120, 2312035142660877056"
     }
   ],
-  "history": [],
+  "history": [
+    {
+      "id": "REAL-1790347812-CCUS-TP1",
+      "symbol": "CCUSDT",
+      "baseCoin": "CC",
+      "entryPrice": 0.12423,
+      "closePrice": 0.13054,
+      "qty": 200.9,
+      "amountUsdt": 25.0,
+      "netReturn": 26.23,
+      "realizedPnL": 1.23,
+      "pnlPct": 5.08,
+      "exitReason": "تحقيق الهدف الأول (TP1: $0.13054) | بيع 50% وتأمين الدخول (Breakeven) 🎯",
+      "closedAt": "2026-09-25 21:31:58"
+    }
+  ],
   "updatedAt": "2026-09-25T18:13:52.881310"
 }
