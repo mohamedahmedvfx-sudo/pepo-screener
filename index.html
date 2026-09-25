@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&family=JetBrains+Mono:wght@400;600;700;800&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="stylesheet" href="style.css?v=9">
     <!-- TradingView Embed Widget & Lightweight Charts Local -->
     <script type="text/javascript" src="lightweight-charts.js"></script>
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
@@ -65,7 +65,12 @@
                     <button type="button" class="btn-account-nav btn-real-nav active-real" id="btnOpenRealModal" onclick="openRealModal()" title="إدارة ومتابعة الصفقات الحقيقية المفتوحة على Bybit وعرض مستويات الدخول والأهداف على الشارت">
                         <span>🔴</span>
                         <span>صفقاتي الحقيقية</span>
-                        <span class="orders-count-badge red-badge" id="realTradesCountBadge" style="display:inline-flex;">1</span>
+                        <span class="orders-count-badge red-badge" id="realTradesCountBadge" style="display:inline-flex;">6</span>
+                    </button>
+                    <button type="button" class="btn-account-nav btn-history-nav" id="btnOpenRealHistoryModal" onclick="openRealHistoryModal()" title="عرض وتوثيق سجل الصفقات المحققة والمنفذة والأرباح (CC + XAI)">
+                        <span>🏆</span>
+                        <span>سجل الصفقات والأرباح</span>
+                        <span class="orders-count-badge green-badge" id="headerHistoryCountBadge" style="display:inline-flex;">2</span>
                     </button>
                     <button type="button" class="btn-account-nav btn-demo-nav active-demo" id="btnOpenDemoModal" onclick="openDemoModal()" title="إدارة المحفظة التجريبية ومتابعة صفقات المحاكاة الحية">
                         <span>🎮</span>
@@ -656,14 +661,14 @@
             </div>
             <div class="modal-demo-body">
                 <!-- Real Tabs Navigation -->
-                <div class="demo-tabs-nav">
-                    <button type="button" class="d-tab-btn active" id="tabBtnRealPositions" onclick="switchRealTab('positions')">
+                <div class="demo-tabs-bar" style="margin-bottom: 18px;">
+                    <button type="button" class="demo-tab-btn active" id="tabBtnRealPositions" onclick="switchRealTab('positions')">
                         <span>🔴 الصفقات المفتوحة الحالية</span>
-                        <span class="tab-badge" id="badgeRealOpenPositions">6</span>
+                        <span class="demo-badge-count" id="badgeRealOpenPositions">6</span>
                     </button>
-                    <button type="button" class="d-tab-btn" id="tabBtnRealHistory" onclick="switchRealTab('history')">
-                        <span>📜 سجل الصفقات والأرباح المحققة</span>
-                        <span class="tab-badge" id="badgeRealHistory">2</span>
+                    <button type="button" class="demo-tab-btn" id="tabBtnRealHistory" onclick="switchRealTab('history')">
+                        <span>🏆 سجل الصفقات والأرباح المحققة</span>
+                        <span class="demo-badge-count" id="badgeRealHistory">2</span>
                     </button>
                 </div>
 
@@ -838,6 +843,14 @@
                 <button type="button" class="btn-close-modal" onclick="closeOrdersModal()">✖</button>
             </div>
             <div class="modal-orders-body">
+                <div style="background: rgba(14,203,129,0.08); border: 1px solid rgba(14,203,129,0.3); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                    <span style="font-size: 13.5px; color: var(--text-primary); font-weight: 600;">
+                        💡 هل تبحث عن <b>سجل الصفقات المنفذة والأرباح المحققة</b> (TP1 / TP2)؟
+                    </span>
+                    <button type="button" onclick="closeOrdersModal(); openRealHistoryModal();" class="btn-demo-chart" style="padding: 7px 16px; font-weight: 800; background: var(--green-profit); color: #000; border-radius: 6px; cursor: pointer;">
+                        🏆 عرض سجل الأرباح المحققة (+$2.49 USDT)
+                    </button>
+                </div>
                 <div id="openOrdersListContainer">
                     <div class="loading-state">
                         <div class="spinner"></div>
@@ -893,6 +906,6 @@
     </footer>
 
     <!-- App Logic -->
-    <script src="app.js?v=8"></script>
+    <script src="app.js?v=9"></script>
 </body>
 </html>

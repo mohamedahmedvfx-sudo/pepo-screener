@@ -2075,6 +2075,11 @@ function closeRealModal() {
     if (modal) modal.classList.add('hidden');
 }
 
+function openRealHistoryModal() {
+    openRealModal();
+    switchRealTab('history');
+}
+
 function switchRealTab(tabKey) {
     state.activeRealTab = tabKey;
     const btnPos = document.getElementById('tabBtnRealPositions');
@@ -2122,8 +2127,13 @@ async function fetchRealPositions() {
             // Update Tab badges
             const bOpen = document.getElementById('badgeRealOpenPositions');
             const bHist = document.getElementById('badgeRealHistory');
+            const hBadge = document.getElementById('headerHistoryCountBadge');
             if (bOpen) bOpen.innerText = openList.length;
             if (bHist) bHist.innerText = histList.length;
+            if (hBadge) {
+                hBadge.innerText = histList.length;
+                hBadge.style.display = histList.length > 0 ? 'inline-flex' : 'none';
+            }
 
             // Open KPIs
             const invEl = document.getElementById('realTotalInvested');

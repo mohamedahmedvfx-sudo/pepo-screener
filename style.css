@@ -3217,6 +3217,18 @@ body {
     box-shadow: 0 0 8px rgba(246, 70, 93, 0.6);
 }
 
+/* Real History Nav Button */
+.btn-account-nav.btn-history-nav {
+    border-color: rgba(14, 203, 129, 0.5);
+    color: #0ECB81;
+    background: rgba(14, 203, 129, 0.1);
+}
+.btn-account-nav.btn-history-nav:hover, .btn-account-nav.btn-history-nav.active-history {
+    background: rgba(14, 203, 129, 0.2);
+    border-color: #0ECB81;
+    box-shadow: 0 0 14px rgba(14, 203, 129, 0.35);
+}
+
 .real-modal-container {
     width: 95vw;
     max-width: 1200px;
