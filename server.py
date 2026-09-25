@@ -824,13 +824,11 @@ def bybit_signed_request(method, endpoint, params=None, json_body=None):
     ts = str(int(time.time() * 1000))
     recv_window = "5000"
     
-    url = f"https://api.bybit.com{endpoint}"
     payload_str = ""
-    
+    qs = ""
     if method == "GET":
         if params:
             qs = urllib.parse.urlencode(sorted(params.items()))
-            url = f"{url}?{qs}"
             payload_str = qs
     elif method == "POST":
         if json_body:
@@ -844,17 +842,34 @@ def bybit_signed_request(method, endpoint, params=None, json_body=None):
         "X-BAPI-TIMESTAMP": ts,
         "X-BAPI-SIGN": sig,
         "X-BAPI-RECV-WINDOW": recv_window,
-        "X-BAPI-SIGN-TYPE": "2"
+        "X-BAPI-SIGN-TYPE": "2",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
-    try:
-        if method == "GET":
-            resp = requests.get(url, headers=headers, timeout=8)
-        else:
-            resp = requests.post(url, headers=headers, data=payload_str, timeout=8)
-        return resp.json()
-    except Exception as e:
-        return {"retCode": -1, "retMsg": f"خطأ في الاتصال بخوادم بايبت: {e}"}
+    base_urls = ["https://api.bybit.com", "https://api.bytick.com"]
+    last_err = ""
+    
+    for base in base_urls:
+        url = f"{base}{endpoint}"
+        if method == "GET" and qs:
+            url = f"{url}?{qs}"
+        try:
+            if method == "GET":
+                resp = requests.get(url, headers=headers, timeout=8)
+            else:
+                resp = requests.post(url, headers=headers, data=payload_str, timeout=8)
+            
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 403:
+                last_err = "منصة Bybit تحظر خوادم أمريكا (Oregon). الحل: اختر منطقة فرانكفورت (ألمانيا) أو سنغافورة في Render."
+            else:
+                last_err = f"كود استجابة غير متوقع من بايبت: {resp.status_code}"
+        except Exception as e:
+            last_err = str(e)
+            
+    return {"retCode": -1, "retMsg": f"خطأ في الاتصال بخوادم بايبت: {last_err}"}
+
 
 class ScreenerWebHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
