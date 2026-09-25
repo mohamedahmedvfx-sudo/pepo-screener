@@ -1005,7 +1005,11 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/scan":
+        if path == "/api/ping":
+            self._send_json({"status": "ok", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "service": "bybit-screener"})
+            return
+
+        elif path == "/api/scan":
             qs = urllib.parse.parse_qs(parsed.query)
             interval = qs.get("interval", ["240"])[0]
             limit = int(qs.get("limit", ["70"])[0])
@@ -1646,12 +1650,32 @@ def background_stop_loss_guard():
         except Exception as e:
             pass
 
+def cloud_keepalive_loop():
+    """Keeps the Render cloud service awake by sending an external HTTP ping every 8 minutes."""
+    ext_url = os.environ.get("RENDER_EXTERNAL_URL") or "https://pepo-screener-1.onrender.com"
+    ping_url = f"{ext_url.rstrip('/')}/api/ping"
+    print(f"📡 [Cloud Keepalive] Auto-ping active for 24/7 uptime: {ping_url}")
+    time.sleep(30)
+    while True:
+        try:
+            time.sleep(480)  # Ping every 8 minutes (Render idle limit is 15 mins)
+            r = requests.get(ping_url, timeout=15)
+            if r.status_code == 200:
+                print(f"💓 [Keepalive Ping OK] {datetime.now().strftime('%H:%M:%S')}")
+        except Exception:
+            pass
+
 def start_server():
     import webbrowser
     import threading
 
     # Start background Stop-Loss guard daemon
     threading.Thread(target=background_stop_loss_guard, daemon=True).start()
+
+    # Start cloud keep-alive loop on cloud instances to ensure 24/7 wakefulness
+    is_cloud = bool(os.environ.get("RENDER") or os.environ.get("KOYEB_APP_NAME") or os.environ.get("PORT"))
+    if is_cloud:
+        threading.Thread(target=cloud_keepalive_loop, daemon=True).start()
 
     # 1. If server is already running, open browser and exit cleanly
     if is_port_responding(PORT):
