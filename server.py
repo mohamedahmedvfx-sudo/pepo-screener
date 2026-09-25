@@ -768,14 +768,28 @@ def get_real_positions_summary():
     total_invested = sum(float(p.get("amountUsdt", 0)) for p in open_pos)
     total_unrealized_pnl = round(sum(p.get("unrealizedPnL", 0) for p in open_pos), 2)
     
+    total_trades = len(history)
+    winning_trades = sum(1 for h in history if float(h.get("realizedPnL", 0)) > 0)
+    losing_trades = sum(1 for h in history if float(h.get("realizedPnL", 0)) < 0)
+    win_rate = round((winning_trades / total_trades * 100), 1) if total_trades > 0 else 0.0
+    total_realized_pnl = round(sum(float(h.get("realizedPnL", 0)) for h in history), 2)
+    
     return {
         "retCode": 0,
         "openPositions": open_pos,
         "history": history,
         "totalInvested": total_invested,
         "totalValue": total_pos_value,
-        "totalUnrealizedPnL": total_unrealized_pnl
+        "totalUnrealizedPnL": total_unrealized_pnl,
+        "stats": {
+            "totalTrades": total_trades,
+            "winningTrades": winning_trades,
+            "losingTrades": losing_trades,
+            "winRate": win_rate,
+            "totalRealizedPnL": total_realized_pnl
+        }
     }
+
 
 # ==============================================================================
 # 🎯 Bybit Instruments Precision & Lot Size Cache

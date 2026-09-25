@@ -2062,6 +2062,7 @@ async function confirmResetDemoBalance() {
 // ==============================================================================
 state.realPositions = { openPositions: [], history: [] };
 state.prevRealPrices = {};
+state.activeRealTab = 'positions';
 
 function openRealModal() {
     const modal = document.getElementById('realPositionsModal');
@@ -2074,23 +2075,60 @@ function closeRealModal() {
     if (modal) modal.classList.add('hidden');
 }
 
+function switchRealTab(tabKey) {
+    state.activeRealTab = tabKey;
+    const btnPos = document.getElementById('tabBtnRealPositions');
+    const btnHist = document.getElementById('tabBtnRealHistory');
+    const contentPos = document.getElementById('realTabPositions');
+    const contentHist = document.getElementById('realTabHistory');
+    const kpiOpen = document.getElementById('realKpiOpenGrid');
+    const kpiHist = document.getElementById('realKpiHistoryGrid');
+
+    if (tabKey === 'positions') {
+        if (btnPos) btnPos.classList.add('active');
+        if (btnHist) btnHist.classList.remove('active');
+        if (contentPos) { contentPos.style.display = 'block'; contentPos.classList.add('active'); }
+        if (contentHist) { contentHist.style.display = 'none'; contentHist.classList.remove('active'); }
+        if (kpiOpen) kpiOpen.style.display = 'grid';
+        if (kpiHist) kpiHist.style.display = 'none';
+        renderRealPositionsTable();
+    } else {
+        if (btnPos) btnPos.classList.remove('active');
+        if (btnHist) btnHist.classList.add('active');
+        if (contentPos) { contentPos.style.display = 'none'; contentPos.classList.remove('active'); }
+        if (contentHist) { contentHist.style.display = 'block'; contentHist.classList.add('active'); }
+        if (kpiOpen) kpiOpen.style.display = 'none';
+        if (kpiHist) kpiHist.style.display = 'grid';
+        renderRealHistoryTable();
+    }
+}
+
 async function fetchRealPositions() {
     try {
         const res = await fetch('/api/real/positions');
         const data = await res.json();
         if (data.retCode === 0) {
             state.realPositions = data;
+            const openList = data.openPositions || [];
+            const histList = data.history || [];
+
+            // Update Header badge
             const badge = document.getElementById('realTradesCountBadge');
-            const count = (data.openPositions || []).length;
             if (badge) {
-                badge.innerText = count;
-                badge.style.display = count > 0 ? 'inline-flex' : 'none';
+                badge.innerText = openList.length;
+                badge.style.display = openList.length > 0 ? 'inline-flex' : 'none';
             }
 
+            // Update Tab badges
+            const bOpen = document.getElementById('badgeRealOpenPositions');
+            const bHist = document.getElementById('badgeRealHistory');
+            if (bOpen) bOpen.innerText = openList.length;
+            if (bHist) bHist.innerText = histList.length;
+
+            // Open KPIs
             const invEl = document.getElementById('realTotalInvested');
             const valEl = document.getElementById('realTotalValue');
             const pnlEl = document.getElementById('realTotalPnL');
-
             if (invEl) invEl.innerText = `$${(data.totalInvested || 0).toFixed(2)} USDT`;
             if (valEl) valEl.innerText = `$${(data.totalValue || 0).toFixed(2)} USDT`;
             if (pnlEl) {
@@ -2100,12 +2138,98 @@ async function fetchRealPositions() {
                 pnlEl.innerText = `${isUp ? '+' : ''}$${pnl.toFixed(2)}`;
             }
 
+            // History KPIs
+            const stats = data.stats || {};
+            const histPnlEl = document.getElementById('realHistTotalPnl');
+            const histWinEl = document.getElementById('realHistWinRate');
+            const histCountEl = document.getElementById('realHistTradesCount');
+            if (histPnlEl) {
+                const rPnl = stats.totalRealizedPnL || 0;
+                histPnlEl.innerText = `${rPnl >= 0 ? '+' : ''}$${rPnl.toFixed(2)} USDT`;
+                histPnlEl.className = `dk-val mono font-bold ${rPnl >= 0 ? 'text-green' : 'text-red'}`;
+            }
+            if (histWinEl) histWinEl.innerText = `${stats.winRate || 100}%`;
+            if (histCountEl) histCountEl.innerText = `${stats.totalTrades || histList.length} صفقات`;
+
             renderRealPositionsTable();
+            renderRealHistoryTable();
         }
     } catch (e) {
         console.warn('Error fetching real positions:', e);
     }
 }
+
+function renderRealHistoryTable() {
+    const tbody = document.getElementById('realHistoryTableBody');
+    if (!tbody) return;
+
+    const list = state.realPositions?.history || [];
+    if (list.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9" style="text-align:center; padding: 30px; color: var(--text-dim);">
+                    سجل الصفقات المنتهية فارغ حالياً. الصفقات المحققة ستظهر هنا فور إغلاقها وتوثيق أرباحها.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    tbody.innerHTML = list.map(h => {
+        const pnl = parseFloat(h.realizedPnL || 0);
+        const pnlPct = parseFloat(h.pnlPct || 0);
+        const isUp = pnl >= 0;
+        const pnlClass = isUp ? 'text-green' : 'text-red';
+        const sign = isUp ? '+' : '';
+        const netCash = parseFloat(h.netReturn || (h.qty * h.closePrice) || 0);
+
+        return `
+            <tr>
+                <td>
+                    <div style="font-weight: 800; font-size: 14px; color: var(--text-primary); display:flex; align-items:center; gap:6px;">
+                        <span>${h.symbol}</span>
+                        <span class="live-dot-mini ${isUp ? 'green' : 'red'}"></span>
+                    </div>
+                    <span class="badge-spot-mini" style="border-color: rgba(14,203,129,0.4); color: var(--green-profit);">منفذة على Bybit</span>
+                </td>
+                <td class="mono font-bold">$${formatPrice(h.entryPrice)}</td>
+                <td class="mono font-bold text-cyan">$${formatPrice(h.closePrice)}</td>
+                <td class="mono font-bold">${parseFloat(h.qty || 0).toLocaleString()} ${h.baseCoin || ''}</td>
+                <td class="mono font-bold text-gold">$${netCash.toFixed(2)} USDT</td>
+                <td>
+                    <div class="mono font-bold ${pnlClass}" style="font-size: 14px;">
+                        ${sign}$${pnl.toFixed(2)}
+                    </div>
+                    <span class="pnl-pill-mini ${isUp ? 'profit' : 'loss'} mono">${sign}${pnlPct.toFixed(2)}%</span>
+                </td>
+                <td>
+                    <span style="font-size: 12px; font-weight: 700; color: ${isUp ? 'var(--green-profit)' : 'var(--red-loss)'};">
+                        ${h.exitReason || 'إغلاق الصفقة'}
+                    </span>
+                </td>
+                <td class="mono text-dim" style="font-size: 11.5px; white-space: nowrap;">
+                    ${h.closedAt || '--'}
+                </td>
+                <td>
+                    <button type="button" class="btn-demo-chart" onclick="openChartForHistoryTrade('${h.symbol}', ${h.entryPrice}, ${h.closePrice})" title="عرض الشارت وسعر الخروج">
+                        📊 الشارت
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function openChartForHistoryTrade(symbol, entry, exit) {
+    closeRealModal();
+    const customLevels = {
+        entryPrice: entry,
+        tp1: exit,
+        setupName: `📜 صفقة منفذة ومحققة | ${symbol} (سعر البيع: $${exit})`
+    };
+    openChartModal(symbol, customLevels);
+}
+
 
 function renderRealPositionsTable() {
     const tbody = document.getElementById('realPositionsTableBody');

@@ -655,8 +655,20 @@
                 <button type="button" class="btn-close-modal" onclick="closeRealModal()">✖</button>
             </div>
             <div class="modal-demo-body">
-                <!-- Summary KPIs -->
-                <div class="demo-kpi-grid">
+                <!-- Real Tabs Navigation -->
+                <div class="demo-tabs-nav">
+                    <button type="button" class="d-tab-btn active" id="tabBtnRealPositions" onclick="switchRealTab('positions')">
+                        <span>🔴 الصفقات المفتوحة الحالية</span>
+                        <span class="tab-badge" id="badgeRealOpenPositions">6</span>
+                    </button>
+                    <button type="button" class="d-tab-btn" id="tabBtnRealHistory" onclick="switchRealTab('history')">
+                        <span>📜 سجل الصفقات والأرباح المحققة</span>
+                        <span class="tab-badge" id="badgeRealHistory">1</span>
+                    </button>
+                </div>
+
+                <!-- Summary KPIs (Open Positions View) -->
+                <div class="demo-kpi-grid" id="realKpiOpenGrid">
                     <div class="demo-kpi-card">
                         <span class="dk-lbl">رأس المال المستثمر بالصفقات:</span>
                         <span class="dk-val mono text-gold" id="realTotalInvested">$0.00 USDT</span>
@@ -671,7 +683,23 @@
                     </div>
                 </div>
 
-                <!-- Open Real Positions Content -->
+                <!-- Summary KPIs (History View) -->
+                <div class="demo-kpi-grid" id="realKpiHistoryGrid" style="display:none;">
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">إجمالي الأرباح المحققة (Realized PnL):</span>
+                        <span class="dk-val mono font-bold text-green" id="realHistTotalPnl">+$0.00</span>
+                    </div>
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">نسبة نجاح الصفقات (Win Rate):</span>
+                        <span class="dk-val mono text-cyan" id="realHistWinRate">100%</span>
+                    </div>
+                    <div class="demo-kpi-card">
+                        <span class="dk-lbl">الصفقات المغلقة المنفذة:</span>
+                        <span class="dk-val mono" id="realHistTradesCount">0 صفقات</span>
+                    </div>
+                </div>
+
+                <!-- Tab 1: Open Real Positions Content -->
                 <div class="demo-tab-content active" id="realTabPositions">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding: 4px 6px; flex-wrap:wrap; gap:8px;">
                         <div style="font-size:12.5px; color:var(--text-secondary); font-weight:600;">
@@ -700,6 +728,42 @@
                                 <tr>
                                     <td colspan="8" style="text-align:center; padding: 30px; color: var(--text-dim);">
                                         جاري جلب الصفقات الحقيقية...
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Closed Real Trades History & PnL Log -->
+                <div class="demo-tab-content" id="realTabHistory" style="display:none;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding: 4px 6px; flex-wrap:wrap; gap:8px;">
+                        <div style="font-size:12.5px; color:var(--text-secondary); font-weight:600;">
+                            🏆 سجل الصفقات المنفذة والمحققة، يوضح أرباح وخسائر كل صفقة بدقة مع السعر وتاريخ الإغلاق
+                        </div>
+                        <div class="real-live-badge" style="border-color: rgba(14,203,129,0.3); background: rgba(14,203,129,0.06); color: var(--green-profit);">
+                            <span>✅ تم تسجيل وتوثيق الصفقات المنفذة</span>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="demo-table">
+                            <thead>
+                                <tr>
+                                    <th>العملة المنفذة</th>
+                                    <th>سعر الدخول</th>
+                                    <th>سعر الخروج (البيع)</th>
+                                    <th>الكمية المباعة</th>
+                                    <th>المبلغ المسترد (كاش)</th>
+                                    <th>صافي الربح / الخسارة</th>
+                                    <th>سبب التنفيذ</th>
+                                    <th>وقت وتاريخ التنفيذ</th>
+                                    <th>الشارت</th>
+                                </tr>
+                            </thead>
+                            <tbody id="realHistoryTableBody">
+                                <tr>
+                                    <td colspan="9" style="text-align:center; padding: 30px; color: var(--text-dim);">
+                                        سجل الصفقات المنتهية فارغ حالياً. الصفقات المحققة ستظهر هنا فور إغلاقها.
                                     </td>
                                 </tr>
                             </tbody>
