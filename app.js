@@ -2399,3 +2399,19 @@ async function manualCloseRealPosition(positionId) {
         showToast('فشل الاتصال بالخادم: ' + e.message, 'error');
     }
 }
+
+async function testTelegramAlert() {
+    showToast('جاري إرسال إشعار تجريبي لهاتفك عبر تيليجرام...', 'info');
+    try {
+        const res = await fetch('/api/test-telegram');
+        const data = await res.json();
+        if (data.success) {
+            playAlertBeep();
+            showToast('✅ تم إرسال الإشعار لهاتفك بنجاح! تفقد تطبيق تيليجرام.', 'success');
+        } else {
+            showToast('⚠️ ' + (data.message || 'فشل إرسال الإشعار'), 'error');
+        }
+    } catch (e) {
+        showToast('خطأ في الاتصال: ' + e.message, 'error');
+    }
+}

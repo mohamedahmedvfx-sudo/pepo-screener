@@ -3272,3 +3272,14 @@ body {
     border-color: var(--cyan-accent);
     box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
 }
+
+.btn-account-nav.btn-telegram-nav {
+    border-color: rgba(36, 161, 222, 0.5);
+    color: #24A1DE;
+    background: rgba(36, 161, 222, 0.1);
+}
+.btn-account-nav.btn-telegram-nav:hover {
+    background: rgba(36, 161, 222, 0.22);
+    border-color: #24A1DE;
+    box-shadow: 0 0 14px rgba(36, 161, 222, 0.35);
+}

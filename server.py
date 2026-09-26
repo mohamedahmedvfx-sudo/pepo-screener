@@ -14,6 +14,8 @@ import time
 import hmac
 import hashlib
 import urllib.parse
+import urllib.request
+import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -60,6 +62,35 @@ EXCLUDED_SYMBOLS = {
     "WBTCUSDT", "WETHUSDT", "STETHUSDT", "USD1USDT", "RLUSDUSDT", "USDSUSDT",
     "USDYUSDT", "USDPUSDT", "USDXUSDT", "USTCUSDT", "MNTUSDT"
 }
+
+# ==============================================================================
+# 📱 Telegram Alert System (إشعارات تيليجرام اللحظية على الموبايل)
+# ==============================================================================
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8745923005:AAEHhCxoDWXasD_qIogj8o4JoPmNbSARYuU")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1887796223")
+
+def send_telegram_alert(text: str, parse_mode: str = "HTML") -> bool:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", TELEGRAM_BOT_TOKEN)
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", TELEGRAM_CHAT_ID)
+    if not token or not chat_id:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception as e:
+        print(f"⚠️ [Telegram Alert Error] {e}")
+        return False
+
+def async_telegram_alert(text: str):
+    threading.Thread(target=send_telegram_alert, args=(text,), daemon=True).start()
 
 # Cache
 CACHE_DATA = None
@@ -837,6 +868,15 @@ def sync_real_positions_with_bybit():
                 remaining_qty = max(0.0, curr_qty - exec_qty)
                 if remaining_qty <= 0.001 or is_tp2:
                     open_pos.remove(matched_pos)
+                    # إشعار تيليجرام الفوري لتحقيق TP2 وإغلاق الصفقة
+                    async_telegram_alert(
+                        f"🚀🚀 <b>تحقيق الهدف الثاني (TP2) وإغلاق الصفقة بالكامل!</b>\n\n"
+                        f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                        f"💵 <b>سعر التنفيذ:</b> <code>${exec_price:,.4f}</code>\n"
+                        f"💰 <b>الربح المحقق:</b> <b>+${pnl:,.2f} USDT</b> (+{pnl_pct}%)\n"
+                        f"🎯 <b>العائد الإجمالي:</b> ${exec_val:,.2f} USDT\n"
+                        f"✨ <i>ألف مبروك! اكتملت أهداف الصفقة 100% بنجاح.</i>"
+                    )
                 else:
                     matched_pos["qty"] = round(remaining_qty, 4)
                     matched_pos["amountUsdt"] = round(max(0.0, float(matched_pos.get("amountUsdt", 0)) - cost), 2)
@@ -844,6 +884,15 @@ def sync_real_positions_with_bybit():
                     matched_pos["tp1LockedPnL"] = pnl
                     matched_pos["sl"] = entry_price
                     matched_pos["setupName"] = f"صفقة حقيقية Bybit (تحقق الهدف الأول 🎯)"
+                    # إشعار تيليجرام الفوري لتحقيق TP1 وتأمين الدخول
+                    async_telegram_alert(
+                        f"🎯 <b>تحقيق الهدف الأول (TP1) بنجاح!</b>\n\n"
+                        f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                        f"💵 <b>سعر البيع (50%):</b> <code>${exec_price:,.4f}</code>\n"
+                        f"💰 <b>الربح المحقق الآن:</b> <b>+${pnl:,.2f} USDT</b> (+{pnl_pct}%)\n"
+                        f"🛡️ <b>تأمين الصفقة:</b> تم رفع وقف الخسارة لسعر الدخول (<code>${entry_price:,.4f}</code>)\n"
+                        f"🚀 متبقي 50% مستمرة نحو الهدف الثاني (TP2: ${tp2_target:,.4f})!"
+                    )
                 changed = True
 
         if changed:
@@ -1007,6 +1056,17 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/ping":
             self._send_json({"status": "ok", "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "service": "bybit-screener"})
+            return
+
+        elif path == "/api/test-telegram":
+            ok = send_telegram_alert(
+                "⚡ <b>فحص الاتصال الفوري:</b>\n\n"
+                "📱 نظام إشعارات Bybit Spot متصل بنجاح مع هاتفك عبر تيليجرام!\n\n"
+                "• 🛒 تنبيهات الصفقات المفتوحة فورياً\n"
+                "• 🎯 أهداف جني الأرباح (TP1 / TP2)\n"
+                "• 🛡️ حارس وقف الخسارة وتأمين الدخول (SL Guard 24/7)"
+            )
+            self._send_json({"success": ok, "message": "تم إرسال إشعار التجربة لهاتفك بنجاح!" if ok else "فشل الإرسال"})
             return
 
         elif path == "/api/scan":
@@ -1319,6 +1379,17 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                     }
                     real_acc["openPositions"].insert(0, new_real_pos)
                     save_real_positions(real_acc)
+                    # إشعار تيليجرام الفوري عند فتح صفقة جديدة
+                    async_telegram_alert(
+                        f"🛒 <b>تم فتح صفقة جديدة على منصة Bybit!</b>\n\n"
+                        f"🪙 <b>العملة:</b> <code>{symbol}</code>\n"
+                        f"📈 <b>سعر الدخول:</b> <code>${new_real_pos['entryPrice']:,.4f}</code>\n"
+                        f"💵 <b>المبلغ المستثمر:</b> <code>${new_real_pos['amountUsdt']:,.2f} USDT</code>\n"
+                        f"🎯 <b>الهدف الأول (TP1):</b> <code>${new_real_pos.get('tp1', 'N/A')}</code>\n"
+                        f"🚀 <b>الهدف الثاني (TP2):</b> <code>${new_real_pos.get('tp2', 'N/A')}</code>\n"
+                        f"🛡️ <b>وقف الخسارة (SL):</b> <code>${new_real_pos.get('sl', 'N/A')}</code>\n"
+                        f"⚙️ <b>النموذج الفني:</b> {new_real_pos.get('setupName', 'صفقة فورية Bybit')}"
+                    )
                 except Exception as e:
                     print(f"⚠️ Error recording real position: {e}")
 
@@ -1645,6 +1716,13 @@ def background_stop_loss_guard():
                     pos["closedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     acc.setdefault("history", []).insert(0, pos)
                     changed = True
+                    # إشعار تيليجرام لتفعيل وقف الخسارة
+                    async_telegram_alert(
+                        f"🛑 <b>تنبيه تفعيل وقف الخسارة (Stop-Loss Guard)!</b>\n\n"
+                        f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                        f"⚠️ <b>السعر الحالي:</b> <code>${live_price:,.4f}</code> وصل لحد الأمان (<code>${sl:,.4f}</code>)\n"
+                        f"⚡ <b>الإجراء الآلي:</b> تم إلغاء أهداف البيع وتسييل الصفقة بالسوق لحماية المحفظة."
+                    )
             if changed:
                 save_real_positions(acc)
         except Exception as e:
