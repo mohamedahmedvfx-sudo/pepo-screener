@@ -159,11 +159,17 @@
 
     <!-- Main App Body -->
     <main class="app-main">
+        <!-- Market Regime Safety Alert -->
+        <div id="marketRegimeNotice" class="market-regime-bar" style="display: none;"></div>
+
         <!-- Filter Controls Bar -->
         <section class="controls-section">
             <div class="filter-pills-group">
                 <button type="button" class="filter-pill active" data-filter="all" onclick="setFilter('all')">
                     🌟 جميع الصفقات (<span id="countAll">0</span>)
+                </button>
+                <button type="button" class="filter-pill elite-filter-btn" data-filter="ELITE" onclick="setFilter('ELITE')">
+                    💎 صفقات النخبة (Score 85+) (<span id="countElite">0</span>)
                 </button>
                 <button type="button" class="filter-pill" data-filter="VOLUME_BREAKOUT" onclick="setFilter('VOLUME_BREAKOUT')">
                     🚀 اختراق وزخم سيولة (<span id="countBreakout">0</span>)

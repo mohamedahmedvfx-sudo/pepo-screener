@@ -3283,3 +3283,87 @@ body {
     border-color: #24A1DE;
     box-shadow: 0 0 14px rgba(36, 161, 222, 0.35);
 }
+
+/* ==============================================================================
+   💎 Market Regime & Elite Filter Enhancements
+   ============================================================================== */
+.market-regime-bar {
+    margin: 12px 0 16px 0;
+    padding: 12px 18px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    backdrop-filter: blur(10px);
+    transition: all 0.3s ease;
+    animation: fadeInSlideDown 0.4s ease forwards;
+}
+
+.market-regime-bar.regime-bearish {
+    background: rgba(246, 70, 93, 0.12);
+    border: 1px solid rgba(246, 70, 93, 0.35);
+    box-shadow: 0 4px 20px rgba(246, 70, 93, 0.15);
+}
+
+.market-regime-bar.regime-bullish {
+    background: rgba(14, 203, 129, 0.12);
+    border: 1px solid rgba(14, 203, 129, 0.35);
+    box-shadow: 0 4px 20px rgba(14, 203, 129, 0.15);
+}
+
+.market-regime-bar.regime-neutral {
+    background: rgba(243, 186, 47, 0.1);
+    border: 1px solid rgba(243, 186, 47, 0.35);
+    box-shadow: 0 4px 20px rgba(243, 186, 47, 0.12);
+}
+
+.regime-content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+}
+
+.regime-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.regime-text {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-primary);
+}
+
+.regime-text strong {
+    color: #FFF;
+    margin-left: 6px;
+}
+
+.filter-pill.elite-filter-btn {
+    border-color: rgba(243, 186, 47, 0.5);
+    color: #F3BA2F;
+    background: rgba(243, 186, 47, 0.08);
+}
+
+.filter-pill.elite-filter-btn:hover,
+.filter-pill.elite-filter-btn.active {
+    background: rgba(243, 186, 47, 0.25);
+    border-color: #F3BA2F;
+    color: #FFF;
+    box-shadow: 0 0 12px rgba(243, 186, 47, 0.4);
+}
+
+.card-elite-tag {
+    background: linear-gradient(135deg, rgba(243, 186, 47, 0.2), rgba(0, 240, 255, 0.2));
+    border: 1px solid rgba(243, 186, 47, 0.5);
+    color: #F3BA2F;
+    font-size: 10.5px;
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+

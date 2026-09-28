@@ -144,8 +144,23 @@ async function fetchLatestScreener() {
             updateFilterCounts();
             renderCards();
         }
+        if (!data || !data.market_regime) {
+            fetchMarketRegime();
+        }
     } catch (e) {
         console.error('Error fetching latest screener:', e);
+    }
+}
+
+async function fetchMarketRegime() {
+    try {
+        const res = await fetch('/api/market-regime');
+        const regime = await res.json();
+        if (regime && regime.status) {
+            renderMarketRegimeBanner(regime);
+        }
+    } catch (e) {
+        console.warn('Error fetching market regime:', e);
     }
 }
 
@@ -210,16 +225,80 @@ function updateStatsBar(data) {
 
     const lScan = document.getElementById('statLastScan');
     if (lScan) lScan.innerText = data.scan_time || '--';
+
+    if (data.market_regime) {
+        renderMarketRegimeBanner(data.market_regime);
+    }
+}
+
+function renderMarketRegimeBanner(regime) {
+    const el = document.getElementById('marketRegimeNotice');
+    if (!el) return;
+
+    if (!regime) {
+        el.style.display = 'none';
+        return;
+    }
+
+    if (regime.status === 'BEARISH') {
+        el.className = 'market-regime-bar regime-bearish';
+        el.innerHTML = `
+            <div class="regime-content">
+                <span class="regime-icon">🛑</span>
+                <div class="regime-text">
+                    <strong>${regime.label || 'السوق العام تصحيحي / هابط (Risk-Off)'}</strong>:
+                    <span>البيتكوين ($${regime.btc_price ? Number(regime.btc_price).toLocaleString() : '--'}) تحت ضغط بيعي وأسفل EMA 50. تم تشديد الفلترة تلقائياً لاستبعاد فخاخ الارتداد وحماية الصفقات من ضرب الـ Stop Loss.</span>
+                </div>
+            </div>
+        `;
+        el.style.display = 'flex';
+    } else if (regime.status === 'BULLISH') {
+        el.className = 'market-regime-bar regime-bullish';
+        el.innerHTML = `
+            <div class="regime-content">
+                <span class="regime-icon">🟢</span>
+                <div class="regime-text">
+                    <strong>${regime.label || 'السوق العام صاعد وآمن (Bullish)'}</strong>:
+                    <span>البيتكوين ($${regime.btc_price ? Number(regime.btc_price).toLocaleString() : '--'}) في ترند صاعد مستقر أعلى EMA 50 — بيئة مواتية لأهداف جني الأرباح.</span>
+                </div>
+            </div>
+        `;
+        el.style.display = 'flex';
+    } else {
+        el.className = 'market-regime-bar regime-neutral';
+        el.innerHTML = `
+            <div class="regime-content">
+                <span class="regime-icon">🟡</span>
+                <div class="regime-text">
+                    <strong>${regime.label || 'السوق العام متذبذب بحذر'}</strong>:
+                    <span>حركة عرضية للبيتكوين ($${regime.btc_price ? Number(regime.btc_price).toLocaleString() : '--'}). يفضل انتقاء صفقات النخبة (Score 85+) فقط.</span>
+                </div>
+            </div>
+        `;
+        el.style.display = 'flex';
+    }
 }
 
 function updateFilterCounts() {
     const setups = state.setups || [];
     
-    document.getElementById('countAll').innerText = setups.length;
-    document.getElementById('countBreakout').innerText = setups.filter(s => s.setup_type === 'VOLUME_BREAKOUT').length;
-    document.getElementById('countPullback').innerText = setups.filter(s => s.setup_type === 'TREND_PULLBACK').length;
-    document.getElementById('countOversold').innerText = setups.filter(s => s.setup_type === 'OVERSOLD_BOUNCE').length;
-    document.getElementById('countDivergence').innerText = setups.filter(s => s.setup_type === 'BULLISH_DIVERGENCE').length;
+    const cAll = document.getElementById('countAll');
+    if (cAll) cAll.innerText = setups.length;
+
+    const cElite = document.getElementById('countElite');
+    if (cElite) cElite.innerText = setups.filter(s => s.is_elite || s.score >= 85).length;
+
+    const cBreakout = document.getElementById('countBreakout');
+    if (cBreakout) cBreakout.innerText = setups.filter(s => s.setup_type === 'VOLUME_BREAKOUT').length;
+
+    const cPullback = document.getElementById('countPullback');
+    if (cPullback) cPullback.innerText = setups.filter(s => s.setup_type === 'TREND_PULLBACK').length;
+
+    const cOversold = document.getElementById('countOversold');
+    if (cOversold) cOversold.innerText = setups.filter(s => s.setup_type === 'OVERSOLD_BOUNCE').length;
+
+    const cDivergence = document.getElementById('countDivergence');
+    if (cDivergence) cDivergence.innerText = setups.filter(s => s.setup_type === 'BULLISH_DIVERGENCE').length;
 }
 
 function setFilter(filterKey) {
@@ -280,7 +359,9 @@ function renderCards() {
     let list = state.setups || [];
 
     // Filter by type
-    if (state.activeFilter !== 'all') {
+    if (state.activeFilter === 'ELITE') {
+        list = list.filter(s => s.is_elite || s.score >= 85);
+    } else if (state.activeFilter !== 'all') {
         list = list.filter(s => s.setup_type === state.activeFilter);
     }
 
@@ -323,8 +404,9 @@ function renderCards() {
                 <div class="card-header-row">
                     <div class="card-coin-identity">
                         <span class="card-rank">#${idx + 1}</span>
-                        <div class="card-titles">
+                        <div class="card-titles" style="display:flex; align-items:center; gap:8px;">
                             <span class="card-symbol mono">${s.symbol}</span>
+                            ${(s.is_elite || s.score >= 85) ? '<span class="card-elite-tag">💎 نخبة</span>' : ''}
                         </div>
                     </div>
                     <span class="card-score-pill" style="color: ${scoreColor}; border-color: ${scoreColor};">
@@ -2207,19 +2289,42 @@ function renderRealHistoryTable() {
     }
 
     tbody.innerHTML = list.map(h => {
-        const pnl = parseFloat(h.realizedPnL || 0);
-        const pnlPct = parseFloat(h.pnlPct || 0);
-        const isUp = pnl >= 0;
-        const pnlClass = isUp ? 'text-green' : 'text-red';
-        const sign = isUp ? '+' : '';
-        const netCash = parseFloat(h.netReturn || (h.qty * h.closePrice) || 0);
+        let pnl = (h.realizedPnL !== undefined && h.realizedPnL !== null && h.realizedPnL !== '') ? parseFloat(h.realizedPnL) : null;
+        let pnlPct = (h.pnlPct !== undefined && h.pnlPct !== null && h.pnlPct !== '') ? parseFloat(h.pnlPct) : null;
+        const entryPrice = parseFloat(h.entryPrice || 0);
+        const closePrice = parseFloat(h.closePrice || 0);
+        const qty = parseFloat(h.qty || 0);
+
+        if (pnl === null && entryPrice > 0 && closePrice > 0 && qty > 0) {
+            const cost = parseFloat(h.amountUsdt || (entryPrice * qty));
+            const netCashCalc = closePrice * qty;
+            pnl = netCashCalc - cost;
+            pnlPct = ((closePrice - entryPrice) / entryPrice) * 100;
+        }
+        pnl = pnl || 0;
+        pnlPct = pnlPct || 0;
+
+        const isProfit = pnl > 0.005;
+        const isLoss = pnl < -0.005;
+        const pnlClass = isLoss ? 'text-red' : (isProfit ? 'text-green' : 'text-dim');
+        const sign = isProfit ? '+' : '';
+        const netCash = parseFloat(h.netReturn || (qty * closePrice) || 0);
+
+        let exitReasonText = h.exitReason;
+        if (!exitReasonText) {
+            if (h.closeReason === 'STOP_LOSS_HIT') {
+                exitReasonText = `تفعيل وقف الخسارة ($${formatPrice(closePrice)}) 🛑`;
+            } else {
+                exitReasonText = isLoss ? `إغلاق بخسارة ($${formatPrice(closePrice)}) 🛑` : (isProfit ? `تحقيق ربح ($${formatPrice(closePrice)}) 🎯` : 'إغلاق الصفقة');
+            }
+        }
 
         return `
             <tr>
                 <td>
                     <div style="font-weight: 800; font-size: 14px; color: var(--text-primary); display:flex; align-items:center; gap:6px;">
                         <span>${h.symbol}</span>
-                        <span class="live-dot-mini ${isUp ? 'green' : 'red'}"></span>
+                        <span class="live-dot-mini ${isProfit ? 'green' : (isLoss ? 'red' : 'gray')}"></span>
                     </div>
                     <span class="badge-spot-mini" style="border-color: rgba(14,203,129,0.4); color: var(--green-profit);">منفذة على Bybit</span>
                 </td>
@@ -2231,11 +2336,11 @@ function renderRealHistoryTable() {
                     <div class="mono font-bold ${pnlClass}" style="font-size: 14px;">
                         ${sign}$${pnl.toFixed(2)}
                     </div>
-                    <span class="pnl-pill-mini ${isUp ? 'profit' : 'loss'} mono">${sign}${pnlPct.toFixed(2)}%</span>
+                    <span class="pnl-pill-mini ${isLoss ? 'loss' : (isProfit ? 'profit' : '')} mono">${sign}${pnlPct.toFixed(2)}%</span>
                 </td>
                 <td>
-                    <span style="font-size: 12px; font-weight: 700; color: ${isUp ? 'var(--green-profit)' : 'var(--red-loss)'};">
-                        ${h.exitReason || 'إغلاق الصفقة'}
+                    <span style="font-size: 12px; font-weight: 700; color: ${isLoss ? 'var(--red-loss)' : (isProfit ? 'var(--green-profit)' : 'var(--text-secondary)')};">
+                        ${exitReasonText}
                     </span>
                 </td>
                 <td class="mono text-dim" style="font-size: 11.5px; white-space: nowrap;">

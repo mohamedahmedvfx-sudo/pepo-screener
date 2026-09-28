@@ -106,7 +106,7 @@ def is_stablecoin(symbol, price, high_24h, low_24h):
         return True
     return False
 
-def fetch_top_spot_symbols(min_turnover=700_000, max_pairs=80):
+def fetch_top_spot_symbols(min_turnover=1_500_000, max_pairs=80):
     url = f"{BYBIT_BASE_URL}/v5/market/tickers?category=spot"
     try:
         resp = requests.get(url, timeout=7)
@@ -203,7 +203,75 @@ def calculate_macd(closes, fast=12, slow=26, signal=9):
     hist = macd_line - signal_line
     return macd_line, signal_line, hist
 
-def analyze_coin(coin_meta, interval="240"):
+def get_market_regime():
+    """
+    Evaluates global market health using BTCUSDT on 4H & 24h trend.
+    Protects against buying altcoins during market-wide dumps.
+    """
+    try:
+        btc_klines = fetch_klines("BTCUSDT", interval="240", limit=60)
+        if not btc_klines or len(btc_klines) < 30:
+            return {
+                "status": "NEUTRAL",
+                "label": "السوق العام: متذبذب/حذر ⚠️",
+                "is_safe": False,
+                "btc_price": 0.0,
+                "btc_rsi": 50.0,
+                "btc_chg_24h": 0.0,
+                "warning": "بيانات البيتكوين غير مكتملة، التداول بحذر."
+            }
+
+        closes = np.array([float(k[4]) for k in btc_klines])
+        btc_price = closes[-1]
+        ema50 = calculate_ema(closes, 50)[-1]
+        rsi = calculate_rsi(closes, period=14)[-1]
+
+        # 24h change from tickers
+        btc_item = GLOBAL_SPOT_TICKERS_RAW.get("BTCUSDT")
+        chg_24h = float(btc_item.get("price24hPcnt", 0)) * 100 if btc_item else 0.0
+
+        if btc_price > ema50 and rsi >= 48 and chg_24h >= -2.0:
+            return {
+                "status": "BULLISH",
+                "label": "السوق العام صاعد وآمن (Bullish) 🟢",
+                "is_safe": True,
+                "btc_price": round(float(btc_price), 2),
+                "btc_rsi": round(float(rsi), 1),
+                "btc_chg_24h": round(float(chg_24h), 2),
+                "warning": ""
+            }
+        elif btc_price < ema50 and (rsi < 45 or chg_24h < -2.5):
+            return {
+                "status": "BEARISH",
+                "label": "السوق العام هابط / تصحيحي (Risk-Off) 🔴",
+                "is_safe": False,
+                "btc_price": round(float(btc_price), 2),
+                "btc_rsi": round(float(rsi), 1),
+                "btc_chg_24h": round(float(chg_24h), 2),
+                "warning": "البيتكوين تحت ضغط بيعي وأسفل EMA 50. تم تشديد معايير الترشيح لمنع الارتدادات الوهمية وتفادي وقف الخسارة."
+            }
+        else:
+            return {
+                "status": "NEUTRAL",
+                "label": "السوق العام متذبذب بحذر (Choppy/Neutral) 🟡",
+                "is_safe": False,
+                "btc_price": round(float(btc_price), 2),
+                "btc_rsi": round(float(rsi), 1),
+                "btc_chg_24h": round(float(chg_24h), 2),
+                "warning": "حركة عرضية غير مستقرة للبيتكوين. يوصى بالتركيز فقط على صفقات النخبة (Score 85+)."
+            }
+    except Exception as e:
+        return {
+            "status": "NEUTRAL",
+            "label": "حالة السوق: متذبذب 🟡",
+            "is_safe": False,
+            "btc_price": 0.0,
+            "btc_rsi": 50.0,
+            "btc_chg_24h": 0.0,
+            "warning": str(e)
+        }
+
+def analyze_coin(coin_meta, interval="240", market_regime=None):
     symbol = coin_meta["symbol"]
     klines = fetch_klines(symbol, interval=interval, limit=100)
     if not klines or len(klines) < 40:
@@ -243,106 +311,159 @@ def analyze_coin(coin_meta, interval="240"):
     candle_body = abs(closes[-1] - opens[-1])
     is_green = closes[-1] >= opens[-1]
     lower_wick = (min(opens[-1], closes[-1]) - lows[-1])
-    has_rejection_wick = lower_wick > (candle_body * 0.8)
+    has_rejection_wick = lower_wick > (candle_body * 0.9)
+
+    is_market_bearish = market_regime and market_regime.get("status") == "BEARISH"
 
     setup_name = ""
     setup_type = ""
     score = 0
     reasons = []
 
-    # 1. SETUP: Oversold Bounce
-    if curr_rsi <= 36 or (prev_rsi <= 32 and curr_rsi > prev_rsi):
-        score = 65
-        setup_type = "OVERSOLD_BOUNCE"
-        setup_name = "💎 اقتناص ارتداد قاع (Oversold Dip)"
-        reasons.append(f"مؤشر RSI وصل لمنطقة تشبع بيعي حاد ({curr_rsi:.1f})")
+    # =========================================================================
+    # 🎯 1. PRIORITY SETUP: Golden Pullback (Trend-Following - Highest Win Rate)
+    # Price is strictly above EMA50, healthy pullback to EMA20/50, safe & reliable
+    # =========================================================================
+    if current_price > ema50[-1] and (abs(current_price - ema50[-1]) / current_price < 0.035 or abs(current_price - ema20[-1]) / current_price < 0.02) and 42 <= curr_rsi <= 62:
+        score = 82
+        setup_type = "TREND_PULLBACK"
+        setup_name = "📈 إعادة اختبار ترند صاعد (Golden Pullback)"
+        reasons.append("ارتكاز مثالي أعلى متوسط الدعم المتحرك EMA 20/50")
         
-        if is_green:
-            score += 12
-            reasons.append("ظهور شمعة خضراء ارتدادية تؤكد توقف البيع")
-        if has_rejection_wick:
-            score += 10
-            reasons.append("ذيل سفلي شرائي طويل (رفض هبوطي قوي)")
-        if vol_ratio > 1.2:
-            score += 8
-            reasons.append(f"تزايد حجم السيولة الارتدادية بنسبة {vol_ratio:.1f}x")
+        if current_price > ema200[-1]:
+            score += 6
+            reasons.append("الترند العام صاعد بثبات تام أعلى EMA 200")
+        if curr_rsi > prev_rsi:
+            score += 5
+            reasons.append(f"انعطاف مؤشر RSI للأعلى من منطقة الأمان ({curr_rsi:.1f})")
+        if is_green or has_rejection_wick:
+            score += 5
+            reasons.append("شمعة ارتداد إيجابية ترفض كسر خط الدعم")
+        if hist[-1] > hist[-2]:
+            score += 4
+            reasons.append("زخم الماكد MACD يتقلص لصالح المشترين")
             
-        stop_loss = min(current_price * 0.955, recent_low_20 * 0.985)
-        tp1 = current_price * 1.045
-        tp2 = current_price * 1.095
-        tp3 = max(current_price * 1.18, recent_high_20)
+        swing_support = min(ema50[-1] * 0.985, np.min(lows[-12:]) * 0.99)
+        stop_loss = min(current_price * 0.962, swing_support)
 
-    # 2. SETUP: Volume Breakout
-    elif vol_ratio >= 1.7 and curr_rsi >= 50 and curr_rsi <= 72 and is_green:
-        score = 70
+    # =========================================================================
+    # 🎯 2. PRIORITY SETUP: Volume Breakout (Momentum & Resistance Cleared)
+    # Institutional volume surge + breaking resistance
+    # =========================================================================
+    elif vol_ratio >= 1.75 and 52 <= curr_rsi <= 74 and is_green:
+        score = 80
         setup_type = "VOLUME_BREAKOUT"
         setup_name = "🚀 اختراق وزخم سيولة (Volume Breakout)"
         reasons.append(f"انفجار سيولة شرائية بمقدار {vol_ratio:.1f}x أضعاف المتوسط")
-        
+
         if current_price >= prev_high_30 * 0.985:
-            score += 15
+            score += 8
             reasons.append("اختراق قمة المقاومة لآخر 30 شمعة")
         if macd_line[-1] > signal_line[-1] and hist[-1] > hist[-2]:
-            score += 10
-            reasons.append("تقاطع إيجابي متصاعد في مؤشر MACD")
+            score += 6
+            reasons.append("تقاطع إيجابي صاعد ومؤكد في مؤشر MACD")
         if current_price > ema20[-1] > ema50[-1]:
-            score += 5
-            reasons.append("ترتيب متصاعد للمتوسطات المتحركة EMA 20/50")
+            score += 4
+            reasons.append("ترتيب متصاعد وصحي للمتوسطات المتحركة EMA 20/50")
 
-        stop_loss = max(current_price * 0.95, opens[-1] * 0.985)
-        tp1 = current_price * 1.05
-        tp2 = current_price * 1.11
-        tp3 = current_price * 1.22
+        stop_loss = max(current_price * 0.952, opens[-1] * 0.982)
 
-    # 3. SETUP: Golden Pullback
-    elif current_price > ema50[-1] and (abs(current_price - ema50[-1]) / current_price < 0.025 or abs(current_price - ema20[-1]) / current_price < 0.015) and 40 <= curr_rsi <= 55:
-        score = 68
-        setup_type = "TREND_PULLBACK"
-        setup_name = "📈 إعادة اختبار ترند صاعد (Golden Pullback)"
-        reasons.append("ارتداد السعر بدقة من متوسط الدعم EMA 20/50")
-        
-        if curr_rsi > prev_rsi:
-            score += 12
-            reasons.append(f"انعطاف مؤشر RSI للأعلى من منطقة الأمان ({curr_rsi:.1f})")
-        if is_green:
-            score += 10
-            reasons.append("ثبات شمعة خضراء أعلى خط الدعم المتحرك")
-        if current_price > ema200[-1]:
-            score += 8
-            reasons.append("الترند العام صاعد بثبات أعلى EMA 200")
+    # =========================================================================
+    # 🎯 3. SETUP: Bullish Divergence (Strict Pivot Reversal)
+    # Detects true swing low divergence between price and RSI
+    # =========================================================================
+    elif True:
+        sub_lows = lows[-24:-3]
+        sub_rsi = rsi[-24:-3]
+        if len(sub_lows) > 0:
+            min_idx = int(np.argmin(sub_lows))
+            prev_swing_low = sub_lows[min_idx]
+            prev_swing_rsi = sub_rsi[min_idx]
+            curr_low = np.min(lows[-3:])
 
-        stop_loss = min(current_price * 0.96, ema50[-1] * 0.98)
-        tp1 = current_price * 1.04
-        tp2 = current_price * 1.085
-        tp3 = current_price * 1.16
+            has_div = (curr_low <= prev_swing_low * 1.01) and (curr_rsi >= prev_swing_rsi + 3.5) and (curr_rsi < 48)
+            confirmed_reversal = (is_green or has_rejection_wick) and (hist[-1] > hist[-2])
 
-    # 4. SETUP: Bullish Divergence
-    else:
-        min_p_idx = np.argmin(lows[-16:-1])
-        if lows[-1] <= lows[-16 + min_p_idx] * 1.01 and rsi[-1] > rsi[-16 + min_p_idx] + 3.0 and curr_rsi < 48:
-            score = 72
-            setup_type = "BULLISH_DIVERGENCE"
-            setup_name = "🔄 انفراج إيجابي للزخم (Bullish Divergence)"
-            reasons.append(f"قاع سعر هابط يقابله قاع صاعد في مؤشر RSI ({curr_rsi:.1f})")
+            if has_div and confirmed_reversal:
+                score = 78
+                setup_type = "BULLISH_DIVERGENCE"
+                setup_name = "🔄 انفراج إيجابي للزخم (Bullish Divergence)"
+                reasons.append(f"انفراج إيجابي مؤكد: قاع سعر ({curr_low:.4f}) يقابله قاع أعلى في RSI ({curr_rsi:.1f})")
+                
+                if vol_ratio >= 1.25:
+                    score += 6
+                    reasons.append(f"تأكيد دخول سيولة ارتدادية بنسبة {vol_ratio:.1f}x")
+                if has_rejection_wick:
+                    score += 5
+                    reasons.append("ذيل سفلي شرائي طويل يؤكد رفض القاع")
+                if is_green:
+                    score += 3
+                    reasons.append("إغلاق شمعة خضراء تؤكد الانعكاس")
+
+                if is_market_bearish:
+                    score -= 16
+                    reasons.append("⚠️ حذر: البيتكوين هابط — خصم من ثقة الانفراج لمنع الفخاخ البيعية")
+
+                stop_loss = min(current_price * 0.955, curr_low * 0.988)
+
+    # =========================================================================
+    # 🎯 4. SETUP: Oversold Bounce (Institutional Dip Absorption)
+    # Extremely strict to avoid catching falling knives!
+    # =========================================================================
+    if score == 0:
+        is_deep_oversold = curr_rsi <= 33 or (prev_rsi <= 30 and curr_rsi > prev_rsi)
+        has_absorption = vol_ratio >= 1.3 or has_rejection_wick
+        not_in_freefall = current_price >= ema50[-1] * 0.82
+
+        if is_deep_oversold and has_absorption and not_in_freefall:
+            score = 75
+            setup_type = "OVERSOLD_BOUNCE"
+            setup_name = "💎 اقتناص ارتداد قاع (Oversold Dip)"
+            reasons.append(f"تشبع بيعي حاد في RSI ({curr_rsi:.1f}) مع بوادر امتصاص مؤسسي")
+
+            if vol_ratio >= 1.4:
+                score += 7
+                reasons.append(f"امتصاص بيعي قوي بارتفاع حجم السيولة {vol_ratio:.1f}x")
+            if has_rejection_wick:
+                score += 6
+                reasons.append("رفض هبوطي قوي بذيل شرائي سفلي ممتد")
             if is_green:
-                score += 12
-                reasons.append("تأكيد انعكاس بشمعة إغلاق خضراء")
-            
-            stop_loss = min(current_price * 0.955, lows[-1] * 0.985)
-            tp1 = current_price * 1.05
-            tp2 = current_price * 1.10
-            tp3 = current_price * 1.20
+                score += 4
+                reasons.append("شمعة ارتدادية خضراء تؤكد إيقاف النزيف")
+            if hist[-1] > hist[-2]:
+                score += 3
+                reasons.append("انحسار قوة البائعين على مؤشر الماكد")
 
-    if score < 72:
+            if is_market_bearish:
+                score -= 18
+                reasons.append("⚠️ حذر: السوق العام هابط — تم تخفيض تقييم الارتداد لمنع فخ السكين الهابطة")
+
+            recent_floor = np.min(lows[-14:])
+            stop_loss = min(current_price * 0.955, recent_floor * 0.988)
+
+    # 🚫 Strict Qualification Filter: Threshold raised to 78!
+    if score < 78:
         return None
 
+    # Dynamic Clamp on Stop Loss:
     sl_dist = current_price - stop_loss
-    tp2_dist = tp2 - current_price
-    rr_ratio = round(tp2_dist / sl_dist, 2) if sl_dist > 0 else 2.0
+    sl_pct = (sl_dist / current_price) * 100
 
-    if rr_ratio < 1.8:
+    if sl_pct < 3.8:
+        stop_loss = current_price * 0.962
+        sl_dist = current_price - stop_loss
+    elif sl_pct > 6.8:
         return None
 
+    tp1 = current_price + (sl_dist * 1.15)
+    tp2 = current_price + (sl_dist * 2.25)
+    tp3 = current_price + (sl_dist * 3.60)
+
+    rr_ratio = round((tp2 - current_price) / sl_dist, 2)
+    if rr_ratio < 1.85:
+        return None
+
+    is_elite = score >= 85
     entry_min = round(min(current_price * 0.995, opens[-1]), 6)
     entry_max = round(current_price * 1.003, 6)
 
@@ -363,6 +484,8 @@ def analyze_coin(coin_meta, interval="240"):
         "price_chg_24h": round(coin_meta["price_chg_24h"], 2),
         "setup_type": setup_type,
         "setup_name": setup_name,
+        "is_elite": is_elite,
+        "quality_label": "💎 فرصة نخبة فائقة الدقة" if is_elite else "⭐ فرصة إيجابية مؤكدة",
         "score": min(score, 98),
         "rsi": round(curr_rsi, 1),
         "vol_ratio": round(vol_ratio, 2),
@@ -390,13 +513,19 @@ def analyze_coin(coin_meta, interval="240"):
 def run_screener_scan(interval="240", max_pairs=70):
     global CACHE_DATA, CACHE_TIME
     start_time = time.time()
-    pairs = fetch_top_spot_symbols(min_turnover=700_000, max_pairs=max_pairs)
+    market_regime = get_market_regime()
+    pairs = fetch_top_spot_symbols(min_turnover=1_500_000, max_pairs=max_pairs)
     if not pairs:
-        return {"scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "setups": [], "error": "No pairs fetched"}
+        return {
+            "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "setups": [],
+            "market_regime": market_regime,
+            "error": "No pairs fetched"
+        }
 
     results = []
     with ThreadPoolExecutor(max_workers=12) as executor:
-        future_to_symbol = {executor.submit(analyze_coin, p, interval): p["symbol"] for p in pairs}
+        future_to_symbol = {executor.submit(analyze_coin, p, interval, market_regime): p["symbol"] for p in pairs}
         for future in as_completed(future_to_symbol):
             try:
                 res = future.result()
@@ -413,6 +542,8 @@ def run_screener_scan(interval="240", max_pairs=70):
         "interval": interval,
         "scanned_count": len(pairs),
         "recommended_count": len(results),
+        "elite_count": sum(1 for r in results if r.get("is_elite")),
+        "market_regime": market_regime,
         "scan_duration_sec": round(elapsed, 2),
         "setups": results
     }
@@ -754,12 +885,47 @@ def get_bybit_signature(api_secret, timestamp, api_key, recv_window, payload):
 # ==============================================================================
 REAL_POS_FILE = os.path.join(WEB_DIR, "real_positions.json")
 
+def heal_and_recalc_history(acc):
+    """Auto-heals and recalculates historical trades that are missing realizedPnL or exitReason."""
+    changed = False
+    for h in acc.get("history", []):
+        entry_p = float(h.get("entryPrice", 0) or 0)
+        close_p = float(h.get("closePrice", 0) or 0)
+        qty = float(h.get("qty", 0) or 0)
+        cost = float(h.get("amountUsdt", 0) or (entry_p * qty))
+        
+        r_pnl = h.get("realizedPnL")
+        needs_pnl_calc = (r_pnl is None or (float(r_pnl) == 0.0 and entry_p > 0 and close_p > 0 and abs(entry_p - close_p) / entry_p > 0.005))
+        
+        if needs_pnl_calc and entry_p > 0 and close_p > 0 and qty > 0:
+            net_ret = round(close_p * qty, 2)
+            pnl = round(net_ret - cost, 2)
+            pct = round(((close_p - entry_p) / entry_p) * 100, 2)
+            h["netReturn"] = net_ret
+            h["realizedPnL"] = pnl
+            h["pnlPct"] = pct
+            changed = True
+            
+        if not h.get("exitReason"):
+            if h.get("closeReason") == "STOP_LOSS_HIT":
+                h["exitReason"] = f"تفعيل وقف الخسارة (${close_p:,.4f}) 🛑"
+            elif h.get("realizedPnL") and float(h.get("realizedPnL")) < -0.005:
+                h["exitReason"] = f"إغلاق بخسارة (${close_p:,.4f}) 🛑"
+            elif h.get("realizedPnL") and float(h.get("realizedPnL")) > 0.005:
+                h["exitReason"] = f"تحقيق ربح (${close_p:,.4f}) 🎯"
+            else:
+                h["exitReason"] = f"إغلاق الصفقة (${close_p:,.4f})"
+            changed = True
+    return changed
+
 def load_real_positions():
     if os.path.exists(REAL_POS_FILE):
         try:
             with open(REAL_POS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if "openPositions" in data:
+                    if heal_and_recalc_history(data):
+                        save_real_positions(data)
                     return data
         except Exception:
             pass
@@ -873,7 +1039,7 @@ def sync_real_positions_with_bybit():
                         f"🚀🚀 <b>تحقيق الهدف الثاني (TP2) وإغلاق الصفقة بالكامل!</b>\n\n"
                         f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
                         f"💵 <b>سعر التنفيذ:</b> <code>${exec_price:,.4f}</code>\n"
-                        f"💰 <b>الربح المحقق:</b> <b>+${pnl:,.2f} USDT</b> (+{pnl_pct}%)\n"
+                        f"💰 <b>الربح المحقق:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
                         f"🎯 <b>العائد الإجمالي:</b> ${exec_val:,.2f} USDT\n"
                         f"✨ <i>ألف مبروك! اكتملت أهداف الصفقة 100% بنجاح.</i>"
                     )
@@ -889,7 +1055,7 @@ def sync_real_positions_with_bybit():
                         f"🎯 <b>تحقيق الهدف الأول (TP1) بنجاح!</b>\n\n"
                         f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
                         f"💵 <b>سعر البيع (50%):</b> <code>${exec_price:,.4f}</code>\n"
-                        f"💰 <b>الربح المحقق الآن:</b> <b>+${pnl:,.2f} USDT</b> (+{pnl_pct}%)\n"
+                        f"💰 <b>الربح المحقق الآن:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
                         f"🛡️ <b>تأمين الصفقة:</b> تم رفع وقف الخسارة لسعر الدخول (<code>${entry_price:,.4f}</code>)\n"
                         f"🚀 متبقي 50% مستمرة نحو الهدف الثاني (TP2: ${tp2_target:,.4f})!"
                     )
@@ -905,10 +1071,11 @@ def sync_real_positions_with_bybit():
 def get_real_positions_summary():
     sync_real_positions_with_bybit()
     acc = load_real_positions()
+    if heal_and_recalc_history(acc):
+        save_real_positions(acc)
     open_pos = acc.get("openPositions", [])
     history = acc.get("history", [])
 
-    
     if open_pos:
         tickers = get_all_spot_tickers_cached(ttl=2.0)
         for pos in open_pos:
@@ -930,8 +1097,8 @@ def get_real_positions_summary():
     total_unrealized_pnl = round(sum(p.get("unrealizedPnL", 0) for p in open_pos), 2)
     
     total_trades = len(history)
-    winning_trades = sum(1 for h in history if float(h.get("realizedPnL", 0)) > 0)
-    losing_trades = sum(1 for h in history if float(h.get("realizedPnL", 0)) < 0)
+    winning_trades = sum(1 for h in history if float(h.get("realizedPnL", 0)) > 0.005)
+    losing_trades = sum(1 for h in history if float(h.get("realizedPnL", 0)) < -0.005)
     win_rate = round((winning_trades / total_trades * 100), 1) if total_trades > 0 else 0.0
     total_realized_pnl = round(sum(float(h.get("realizedPnL", 0)) for h in history), 2)
     
@@ -1098,6 +1265,11 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
         elif path == "/api/pulse":
             pulse = get_market_overview()
             self._send_json(pulse)
+            return
+
+        elif path == "/api/market-regime":
+            regime = get_market_regime()
+            self._send_json(regime)
             return
 
         elif path == "/api/account/status":
@@ -1424,10 +1596,25 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
             }
             sell_res = bybit_signed_request("POST", "/v5/order/create", json_body=sell_body)
             if sell_res.get("retCode") == 0:
+                tickers = get_all_spot_tickers_cached(ttl=2.0)
+                live_price = tickers.get(sym, float(pos.get("entryPrice", 0)))
+                entry_p = float(pos.get("entryPrice", live_price) or live_price)
+                p_qty = float(qty or 0)
+                p_cost = float(pos.get("amountUsdt", 0) or (p_qty * entry_p))
+                net_ret = round(p_qty * live_price, 2)
+                pnl = round(net_ret - p_cost, 2)
+                pnl_pct = round(((live_price - entry_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
+
                 real_acc["openPositions"] = [p for p in real_acc["openPositions"] if p["id"] != pos_id]
                 pos["status"] = "CLOSED"
+                pos["closeReason"] = "MANUAL_CLOSE"
+                pos["closePrice"] = live_price
+                pos["netReturn"] = net_ret
+                pos["realizedPnL"] = pnl
+                pos["pnlPct"] = pnl_pct
+                pos["exitReason"] = f"إغلاق يدوي فوري (${live_price:,.4f}) ⚡"
                 pos["closedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                real_acc.get("history", []).insert(0, pos)
+                real_acc.setdefault("history", []).insert(0, pos)
                 save_real_positions(real_acc)
             self._send_json(sell_res)
             return
@@ -1708,11 +1895,22 @@ def background_stop_loss_guard():
                     except Exception as sl_err:
                         print(f"⚠️ [SL Guard] Error selling {sym}: {sl_err}")
 
-                    # 3. Move position to history
+                    # 3. Compute Realized Loss and move position to history
+                    entry_p = float(pos.get("entryPrice", live_price) or live_price)
+                    p_qty = float(pos.get("qty", 0) or 0)
+                    p_cost = float(pos.get("amountUsdt", 0) or (p_qty * entry_p))
+                    net_ret = round(p_qty * live_price, 2)
+                    pnl = round(net_ret - p_cost, 2)
+                    pnl_pct = round(((live_price - entry_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
+
                     open_pos.remove(pos)
                     pos["status"] = "CLOSED"
                     pos["closeReason"] = "STOP_LOSS_HIT"
                     pos["closePrice"] = live_price
+                    pos["netReturn"] = net_ret
+                    pos["realizedPnL"] = pnl
+                    pos["pnlPct"] = pnl_pct
+                    pos["exitReason"] = f"تفعيل وقف الخسارة الإلزامي (${sl:,.4f}) 🛑"
                     pos["closedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     acc.setdefault("history", []).insert(0, pos)
                     changed = True
@@ -1720,8 +1918,10 @@ def background_stop_loss_guard():
                     async_telegram_alert(
                         f"🛑 <b>تنبيه تفعيل وقف الخسارة (Stop-Loss Guard)!</b>\n\n"
                         f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
-                        f"⚠️ <b>السعر الحالي:</b> <code>${live_price:,.4f}</code> وصل لحد الأمان (<code>${sl:,.4f}</code>)\n"
-                        f"⚡ <b>الإجراء الآلي:</b> تم إلغاء أهداف البيع وتسييل الصفقة بالسوق لحماية المحفظة."
+                        f"📉 <b>سعر الخروج:</b> <code>${live_price:,.4f}</code> (حد الأمان: ${sl:,.4f})\n"
+                        f"💸 <b>الخسارة المحققة:</b> <b>{pnl:,.2f} USDT ({pnl_pct:+.2f}%)</b>\n"
+                        f"💵 <b>المبلغ المسترد للكاش:</b> ${net_ret:,.2f} USDT\n"
+                        f"⚡ <i>تم تسييل الصفقة بالكامل بالسوق لحماية المحفظة ومنع تعميق الخسارة.</i>"
                     )
             if changed:
                 save_real_positions(acc)
