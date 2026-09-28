@@ -884,9 +884,15 @@ def get_bybit_signature(api_secret, timestamp, api_key, recv_window, payload):
 # 🔴 Live Real Positions Persistence & Helpers
 # ==============================================================================
 REAL_POS_FILE = os.path.join(WEB_DIR, "real_positions.json")
+REAL_POS_BAK_FILE = os.path.join(WEB_DIR, "real_positions_backup.json")
+REAL_POS_SEED_FILE = os.path.join(WEB_DIR, "real_positions_seed.json")
+REAL_POS_LOCK = threading.RLock()
+_REAL_POS_CACHE = None
 
 def heal_and_recalc_history(acc):
     """Auto-heals and recalculates historical trades that are missing realizedPnL or exitReason."""
+    if not isinstance(acc, dict):
+        return False
     changed = False
     for h in acc.get("history", []):
         entry_p = float(h.get("entryPrice", 0) or 0)
@@ -919,31 +925,91 @@ def heal_and_recalc_history(acc):
     return changed
 
 def load_real_positions():
-    if os.path.exists(REAL_POS_FILE):
-        try:
-            with open(REAL_POS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if "openPositions" in data:
-                    if heal_and_recalc_history(data):
-                        save_real_positions(data)
-                    return data
-        except Exception:
-            pass
-    default_acc = {
-        "openPositions": [],
-        "history": [],
-        "updatedAt": datetime.now().isoformat()
-    }
-    save_real_positions(default_acc)
-    return default_acc
+    global _REAL_POS_CACHE
+    with REAL_POS_LOCK:
+        # 1. Check primary file, then backup, then seed file
+        candidates = [REAL_POS_FILE, REAL_POS_BAK_FILE, REAL_POS_SEED_FILE]
+        for fpath in candidates:
+            if os.path.exists(fpath) and os.path.getsize(fpath) > 20:
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and "openPositions" in data:
+                        # Prioritize non-empty data
+                        if len(data.get("openPositions", [])) > 0 or len(data.get("history", [])) > 0:
+                            try:
+                                if heal_and_recalc_history(data):
+                                    save_real_positions(data)
+                            except Exception:
+                                pass
+                            _REAL_POS_CACHE = data
+                            return data
+                except Exception as err:
+                    print(f"⚠️ [Real Positions] Read error on {os.path.basename(fpath)}: {err}")
+
+        # 2. Return memory cache if it has positions or history
+        if _REAL_POS_CACHE and isinstance(_REAL_POS_CACHE, dict):
+            if len(_REAL_POS_CACHE.get("openPositions", [])) > 0 or len(_REAL_POS_CACHE.get("history", [])) > 0:
+                return _REAL_POS_CACHE
+
+        # 3. If primary file exists and has empty structure, check if seed file can restore it
+        if os.path.exists(REAL_POS_SEED_FILE) and os.path.getsize(REAL_POS_SEED_FILE) > 20:
+            try:
+                with open(REAL_POS_SEED_FILE, "r", encoding="utf-8") as f:
+                    seed_data = json.load(f)
+                if isinstance(seed_data, dict) and (seed_data.get("openPositions") or seed_data.get("history")):
+                    print("♻️ [Real Positions] Restored active positions and history from immutable seed file.")
+                    save_real_positions(seed_data)
+                    _REAL_POS_CACHE = seed_data
+                    return seed_data
+            except Exception as se:
+                print(f"⚠️ [Real Positions] Seed restore error: {se}")
+
+        # 4. Fallback default only if completely uninitialized
+        if _REAL_POS_CACHE is not None:
+            return _REAL_POS_CACHE
+
+        default_acc = {
+            "openPositions": [],
+            "history": [],
+            "updatedAt": datetime.now().isoformat()
+        }
+        _REAL_POS_CACHE = default_acc
+        return default_acc
 
 def save_real_positions(data):
-    data["updatedAt"] = datetime.now().isoformat()
-    try:
-        with open(REAL_POS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Error saving real positions: {e}")
+    global _REAL_POS_CACHE
+    if not isinstance(data, dict):
+        return
+    with REAL_POS_LOCK:
+        # Anti-Wipeout Guard: Never overwrite valid positions/history with empty arrays
+        curr_open = len((_REAL_POS_CACHE or {}).get("openPositions", []))
+        curr_hist = len((_REAL_POS_CACHE or {}).get("history", []))
+        new_open = len(data.get("openPositions", []))
+        new_hist = len(data.get("history", []))
+
+        if (curr_open > 0 or curr_hist > 0) and (new_open == 0 and new_hist == 0):
+            print("🛑 [CRITICAL GUARD] Attempted to wipe out real_positions with empty lists! Save blocked.")
+            return
+
+        data["updatedAt"] = datetime.now().isoformat()
+        _REAL_POS_CACHE = data
+
+        tmp_file = REAL_POS_FILE + ".tmp"
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, REAL_POS_FILE)
+            # Sync backup file
+            try:
+                import shutil
+                shutil.copyfile(REAL_POS_FILE, REAL_POS_BAK_FILE)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Error saving real positions: {e}")
 
 _LAST_BYBIT_SYNC = 0
 

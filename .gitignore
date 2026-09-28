@@ -10,5 +10,6 @@ __pycache__/
 
 # Logs & temp
 *.log
+*.apk
 scratch/
 .system_generated/
