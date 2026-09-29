@@ -2346,15 +2346,49 @@ function renderRealHistoryTable() {
                 <td class="mono text-dim" style="font-size: 11.5px; white-space: nowrap;">
                     ${h.closedAt || '--'}
                 </td>
-                <td>
-                    <button type="button" class="btn-demo-chart" onclick="openChartForHistoryTrade('${h.symbol}', ${h.entryPrice}, ${h.closePrice})" title="عرض الشارت وسعر الخروج">
-                        📊 الشارت
-                    </button>
+                <td style="white-space: nowrap;">
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <button type="button" class="btn-demo-chart" onclick="openChartForHistoryTrade('${h.symbol}', ${h.entryPrice}, ${h.closePrice})" title="عرض الشارت وسعر الخروج">
+                            📊 الشارت
+                        </button>
+                        <button type="button" class="btn-del-history" onclick="deleteRealHistoryItem('${h.id}', '${h.execId || ''}', '${h.orderId || ''}', '${h.symbol}')" title="مسح هذه الصفقة من السجل" style="background:rgba(246,70,93,0.12); color:#f6465d; border:1px solid rgba(246,70,93,0.3); border-radius:6px; padding:4px 8px; cursor:pointer; font-size:12px; font-weight:700;">
+                            🗑️
+                        </button>
+                    </div>
                 </td>
             </tr>
         `;
     }).join('');
 }
+
+window.deleteRealHistoryItem = async function(id, execId, orderId, symbol) {
+    if (!confirm(`هل أنت متأكد من مسح صفقة ${symbol || ''} من سجل الأرباح المحققة؟`)) {
+        return;
+    }
+    try {
+        const res = await fetch('/api/real/history/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id, execId, orderId, symbol })
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (state.realPositions && state.realPositions.history) {
+                state.realPositions.history = state.realPositions.history.filter(h => h.id !== id);
+                if (data.stats) {
+                    state.realPositions.stats = data.stats;
+                }
+            }
+            await fetchRealPositions();
+            alert(data.message || 'تم حذف الصفقة بنجاح.');
+        } else {
+            alert(data.message || 'تعذر حذف الصفقة.');
+        }
+    } catch (e) {
+        console.error('Error deleting history item:', e);
+        alert('حدث خطأ أثناء الاتصال بالسيرفر لحذف الصفقة.');
+    }
+};
 
 function openChartForHistoryTrade(symbol, entry, exit) {
     closeRealModal();

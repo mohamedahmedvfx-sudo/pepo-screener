@@ -1039,7 +1039,7 @@ def sync_real_positions_with_bybit():
         history = acc.get("history", [])
         changed = False
 
-        recorded_exec_ids = set()
+        recorded_exec_ids = set(acc.get("ignoredExecIds", []))
         for h in history:
             if h.get("execId"):
                 recorded_exec_ids.add(h["execId"])
@@ -1068,7 +1068,12 @@ def sync_real_positions_with_bybit():
                     break
 
             if matched_pos and exec_qty > 0 and exec_price > 0:
-                entry_price = float(matched_pos.get("entryPrice", exec_price))
+                raw_entry = matched_pos.get("entryPrice")
+                entry_price = float(raw_entry or 0)
+                if entry_price <= 0:
+                    entry_price = float(matched_pos.get("currentPrice", 0) or exec_price)
+                if entry_price <= 0:
+                    entry_price = exec_price
                 cost = round(exec_qty * entry_price, 2)
                 pnl = round(exec_val - cost, 2)
                 pnl_pct = round(((exec_price - entry_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
@@ -1591,18 +1596,28 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
 
                     # Save to real_positions.json
                     real_acc = load_real_positions()
+                    entry_p = exec_price or float(orders[0].get("basePrice", 0) if orders else 0)
+                    if not entry_p or entry_p <= 0:
+                        try:
+                            tickers = get_all_spot_tickers_cached(ttl=2.0)
+                            entry_p = float(tickers.get(symbol, 0) or 0)
+                        except Exception:
+                            pass
+                    if not entry_p or entry_p <= 0:
+                        entry_p = float(req_json.get("price") or 0)
+
                     new_real_pos = {
                         "id": f"REAL-{int(time.time())}-{symbol[:4]}",
                         "symbol": symbol,
                         "baseCoin": symbol.replace("USDT", ""),
                         "side": "Buy",
                         "orderType": order_type,
-                        "entryPrice": exec_price or float(orders[0].get("basePrice", 0) if orders else 0),
-                        "currentPrice": exec_price,
+                        "entryPrice": entry_p,
+                        "currentPrice": entry_p,
                         "qty": exec_qty,
-                        "amountUsdt": float(qty) if (order_type == "Market" and req_json.get("marketUnit") == "quoteCoin") else round(exec_qty * exec_price, 2),
-                        "feePaid": round(exec_qty * exec_price * 0.001, 3),
-                        "currentValue": round(exec_qty * exec_price, 2),
+                        "amountUsdt": float(qty) if (order_type == "Market" and req_json.get("marketUnit") == "quoteCoin") else round(exec_qty * entry_p, 2),
+                        "feePaid": round(exec_qty * entry_p * 0.001, 3),
+                        "currentValue": round(exec_qty * entry_p, 2),
                         "unrealizedPnL": 0.0,
                         "unrealizedPnLPct": 0.0,
                         "tp1": float(req_json.get("tp1", 0)) if req_json.get("tp1") else (float(tp) if tp else None),
@@ -1683,6 +1698,48 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                 real_acc.setdefault("history", []).insert(0, pos)
                 save_real_positions(real_acc)
             self._send_json(sell_res)
+            return
+
+        elif path == "/api/real/history/delete":
+            item_id = req_json.get("id")
+            exec_id = req_json.get("execId")
+            order_id = req_json.get("orderId")
+            symbol = req_json.get("symbol")
+            
+            real_acc = load_real_positions()
+            history = real_acc.get("history", [])
+            initial_count = len(history)
+            
+            history = [h for h in history if not (
+                (item_id and h.get("id") == item_id) or
+                (exec_id and h.get("execId") == exec_id) or
+                (order_id and h.get("orderId") == order_id)
+            )]
+            
+            if len(history) < initial_count:
+                real_acc["history"] = history
+                ignored = real_acc.get("ignoredExecIds", [])
+                for x in [item_id, exec_id, order_id]:
+                    if x and x not in ignored:
+                        ignored.append(x)
+                real_acc["ignoredExecIds"] = ignored
+                
+                total_trades = len(history)
+                winning_trades = sum(1 for h in history if float(h.get("realizedPnL", 0) or 0) > 0.005)
+                losing_trades = sum(1 for h in history if float(h.get("realizedPnL", 0) or 0) < -0.005)
+                win_rate = round((winning_trades / total_trades * 100), 1) if total_trades > 0 else 0.0
+                total_realized_pnl = round(sum(float(h.get("realizedPnL", 0) or 0) for h in history), 2)
+                real_acc["stats"] = {
+                    "totalTrades": total_trades,
+                    "winningTrades": winning_trades,
+                    "losingTrades": losing_trades,
+                    "winRate": win_rate,
+                    "totalRealizedPnL": total_realized_pnl
+                }
+                save_real_positions(real_acc)
+                self._send_json({"success": True, "message": f"تم حذف صفقة {symbol or ''} من السجل بنجاح", "stats": real_acc["stats"]})
+            else:
+                self._send_json({"success": False, "message": "لم يتم العثور على الصفقة في السجل"})
             return
 
         elif path == "/api/order/cancel":
