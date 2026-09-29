@@ -1511,7 +1511,30 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                     exec_price = float(price) if price else 0
                     if orders:
                         exec_qty = float(orders[0].get("cumExecQty", 0) or 0)
-                        exec_price = float(orders[0].get("avgPrice", 0) or exec_price)
+                    if not exec_qty:
+                        try:
+                            # 1. Fallback: check Bybit execution list for order_id
+                            ex_res = bybit_signed_request("GET", "/v5/execution/list", params={"category": "spot", "orderId": order_id})
+                            ex_list = ex_res.get("result", {}).get("list", [])
+                            if ex_list:
+                                exec_qty = sum(float(e.get("execQty", 0) or 0) for e in ex_list)
+                                total_val = sum(float(e.get("execValue", 0) or 0) for e in ex_list)
+                                if exec_qty > 0 and not exec_price:
+                                    exec_price = total_val / exec_qty
+                        except Exception:
+                            pass
+                    if not exec_qty:
+                        try:
+                            # 2. Fallback: check wallet balance
+                            base_coin = symbol.replace("USDT", "")
+                            wb = bybit_signed_request("GET", "/v5/account/wallet-balance", params={"accountType": "UNIFIED", "coin": base_coin})
+                            c_list = wb.get("result", {}).get("list", [{}])[0].get("coin", [])
+                            if c_list:
+                                w_bal = float(c_list[0].get("walletBalance", 0) or 0)
+                                if w_bal > 0:
+                                    exec_qty = w_bal
+                        except Exception:
+                            pass
                     if not exec_qty:
                         exec_qty = float(qty) if order_type == "Limit" else 0
                         
