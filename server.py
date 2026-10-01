@@ -1006,12 +1006,159 @@ def save_real_positions(data):
             try:
                 import shutil
                 shutil.copyfile(REAL_POS_FILE, REAL_POS_BAK_FILE)
+                if len(data.get("openPositions", [])) > 0:
+                    shutil.copyfile(REAL_POS_FILE, REAL_POS_SEED_FILE)
             except Exception:
                 pass
         except Exception as e:
             print(f"Error saving real positions: {e}")
 
 _LAST_BYBIT_SYNC = 0
+_LAST_WALLET_RECONCILE = 0
+
+def reconcile_positions_with_bybit_wallet():
+    global _LAST_WALLET_RECONCILE
+    now = time.time()
+    if now - _LAST_WALLET_RECONCILE < 12:
+        return
+    _LAST_WALLET_RECONCILE = now
+
+    cfg = load_bybit_config()
+    if not cfg:
+        return
+
+    try:
+        wb_res = bybit_signed_request("GET", "/v5/account/wallet-balance", params={"accountType": "UNIFIED"})
+        if wb_res.get("retCode") != 0:
+            return
+        coins = wb_res.get("result", {}).get("list", [{}])[0].get("coin", [])
+        wallet_coins = {}
+        for c in coins:
+            bal = float(c.get("walletBalance", 0) or 0)
+            usd = float(c.get("usdValue", 0) or 0)
+            coin_name = c.get("coin", "")
+            if usd > 1.0 or bal > 0.001:
+                wallet_coins[coin_name] = {
+                    "balance": bal,
+                    "locked": float(c.get("locked", 0) or 0),
+                    "usdValue": usd
+                }
+
+        orders_res = bybit_signed_request("GET", "/v5/order/realtime", params={"category": "spot"})
+        open_orders = orders_res.get("result", {}).get("list", []) if orders_res.get("retCode") == 0 else []
+        orders_by_sym = {}
+        for o in open_orders:
+            orders_by_sym.setdefault(o["symbol"], []).append(o)
+
+        exec_res = bybit_signed_request("GET", "/v5/execution/list", params={"category": "spot", "limit": "100"})
+        exec_list = exec_res.get("result", {}).get("list", []) if exec_res.get("retCode") == 0 else []
+        buys_by_sym = {}
+        for e in exec_list:
+            if e.get("side") == "Buy":
+                buys_by_sym.setdefault(e["symbol"], []).append(e)
+
+        acc = load_real_positions()
+        open_pos = acc.get("openPositions", [])
+        history = acc.get("history", [])
+        changed = False
+
+        existing_syms = set()
+        cleaned_open_pos = []
+        for p in open_pos:
+            sym = p.get("symbol")
+            base = p.get("baseCoin", sym.replace("USDT", "") if sym else "")
+            w_info = wallet_coins.get(base, {})
+            w_usd = w_info.get("usdValue", 0)
+            has_orders = len(orders_by_sym.get(sym, [])) > 0
+            if w_usd < 0.50 and not has_orders:
+                changed = True
+                continue
+            cleaned_open_pos.append(p)
+            existing_syms.add(sym)
+
+        open_pos = cleaned_open_pos
+
+        EXCLUDED_COINS = {"USDT", "USDC", "USDE", "FDUSD", "EUR", "DAI", "FHE"}
+        for coin_name, info in wallet_coins.items():
+            if coin_name in EXCLUDED_COINS:
+                continue
+            sym = f"{coin_name}USDT"
+            usd_val = info["usdValue"]
+            bal = info["balance"]
+
+            if usd_val < 3.0:
+                continue
+
+            sym_orders = orders_by_sym.get(sym, [])
+            sym_buys = buys_by_sym.get(sym, [])
+
+            if not sym_orders and not sym_buys:
+                continue
+
+            if sym not in existing_syms:
+                entry_p = 0.0
+                opened_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                tot_qty = 0.0
+                tot_cost = 0.0
+                if sym_buys:
+                    for b in sym_buys[:5]:
+                        b_qty = float(b.get("execQty", 0) or 0)
+                        b_price = float(b.get("execPrice", 0) or 0)
+                        b_val = float(b.get("execValue", 0) or 0)
+                        tot_qty += b_qty
+                        tot_cost += b_val if b_val > 0 else (b_qty * b_price)
+                    if tot_qty > 0:
+                        entry_p = round(tot_cost / tot_qty, 6)
+                    t_ms = int(sym_buys[0].get("execTime", 0) or 0)
+                    if t_ms:
+                        opened_at = datetime.fromtimestamp(t_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+                if entry_p <= 0:
+                    entry_p = round(usd_val / bal, 6) if bal > 0 else 1.0
+
+                sell_orders = [o for o in sym_orders if o.get("side") == "Sell" and o.get("orderType") == "Limit"]
+                sell_orders.sort(key=lambda x: float(x.get("price", 0) or 0))
+
+                tp1 = float(sell_orders[0]["price"]) if len(sell_orders) > 0 else round(entry_p * 1.05, 4)
+                tp2 = float(sell_orders[1]["price"]) if len(sell_orders) > 1 else round(entry_p * 1.10, 4)
+                tp_order_ids = ", ".join([o["orderId"] for o in sell_orders]) if sell_orders else None
+                sl = round(entry_p * 0.95, 6)
+
+                new_pos = {
+                    "id": f"REAL-{int(time.time())}-{coin_name[:4]}",
+                    "symbol": sym,
+                    "baseCoin": coin_name,
+                    "side": "Buy",
+                    "orderType": "Market",
+                    "entryPrice": entry_p,
+                    "currentPrice": entry_p,
+                    "qty": round(bal, 4),
+                    "amountUsdt": round(tot_cost if tot_cost > 0 else (bal * entry_p), 2),
+                    "feePaid": round(bal * entry_p * 0.001, 3),
+                    "currentValue": round(usd_val, 2),
+                    "unrealizedPnL": round(usd_val - (tot_cost if tot_cost > 0 else (bal * entry_p)), 2),
+                    "unrealizedPnLPct": 0.0,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "tp3": None,
+                    "sl": sl,
+                    "setupName": "صفقة حقيقية Bybit",
+                    "openedAt": opened_at,
+                    "status": "OPEN",
+                    "orderId": sym_buys[0].get("orderId", "") if sym_buys else "",
+                    "tpOrderId": tp_order_ids
+                }
+                open_pos.insert(0, new_pos)
+                existing_syms.add(sym)
+                changed = True
+                print(f"♻️ [Auto-Reconcile] Restored active Bybit position: {sym} (Bal: {bal}, Entry: {entry_p})")
+
+        if changed:
+            acc["openPositions"] = open_pos
+            acc["history"] = history
+            save_real_positions(acc)
+    except Exception as ex:
+        print(f"⚠️ Error during Bybit wallet reconciliation: {ex}")
 
 def sync_real_positions_with_bybit():
     global _LAST_BYBIT_SYNC
@@ -1031,113 +1178,112 @@ def sync_real_positions_with_bybit():
             return
             
         exec_list = res.get("result", {}).get("list", [])
-        if not exec_list:
-            return
+        if exec_list:
+            acc = load_real_positions()
+            open_pos = acc.get("openPositions", [])
+            history = acc.get("history", [])
+            changed = False
 
-        acc = load_real_positions()
-        open_pos = acc.get("openPositions", [])
-        history = acc.get("history", [])
-        changed = False
+            recorded_exec_ids = set(acc.get("ignoredExecIds", []))
+            for h in history:
+                if h.get("execId"):
+                    recorded_exec_ids.add(h["execId"])
+                if h.get("orderId"):
+                    recorded_exec_ids.add(h["orderId"])
 
-        recorded_exec_ids = set(acc.get("ignoredExecIds", []))
-        for h in history:
-            if h.get("execId"):
-                recorded_exec_ids.add(h["execId"])
-            if h.get("orderId"):
-                recorded_exec_ids.add(h["orderId"])
+            for e in exec_list:
+                if e.get("side") != "Sell":
+                    continue
+                exec_id = e.get("execId")
+                order_id = e.get("orderId")
+                if (exec_id and exec_id in recorded_exec_ids) or (order_id and order_id in recorded_exec_ids):
+                    continue
 
-        for e in exec_list:
-            if e.get("side") != "Sell":
-                continue
-            exec_id = e.get("execId")
-            order_id = e.get("orderId")
-            if (exec_id and exec_id in recorded_exec_ids) or (order_id and order_id in recorded_exec_ids):
-                continue
+                sym = e.get("symbol")
+                exec_price = float(e.get("execPrice", 0) or 0)
+                exec_qty = float(e.get("execQty", 0) or 0)
+                exec_val = float(e.get("execValue", 0) or 0)
+                exec_time_ms = int(e.get("execTime", 0) or 0)
+                closed_at = datetime.fromtimestamp(exec_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S") if exec_time_ms else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            sym = e.get("symbol")
-            exec_price = float(e.get("execPrice", 0) or 0)
-            exec_qty = float(e.get("execQty", 0) or 0)
-            exec_val = float(e.get("execValue", 0) or 0)
-            exec_time_ms = int(e.get("execTime", 0) or 0)
-            closed_at = datetime.fromtimestamp(exec_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S") if exec_time_ms else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                matched_pos = None
+                for p in open_pos:
+                    if p.get("symbol") == sym:
+                        matched_pos = p
+                        break
 
-            matched_pos = None
-            for p in open_pos:
-                if p.get("symbol") == sym:
-                    matched_pos = p
-                    break
+                if matched_pos and exec_qty > 0 and exec_price > 0:
+                    raw_entry = matched_pos.get("entryPrice")
+                    entry_price = float(raw_entry or 0)
+                    if entry_price <= 0:
+                        entry_price = float(matched_pos.get("currentPrice", 0) or exec_price)
+                    if entry_price <= 0:
+                        entry_price = exec_price
+                    cost = round(exec_qty * entry_price, 2)
+                    pnl = round(exec_val - cost, 2)
+                    pnl_pct = round(((exec_price - entry_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
 
-            if matched_pos and exec_qty > 0 and exec_price > 0:
-                raw_entry = matched_pos.get("entryPrice")
-                entry_price = float(raw_entry or 0)
-                if entry_price <= 0:
-                    entry_price = float(matched_pos.get("currentPrice", 0) or exec_price)
-                if entry_price <= 0:
-                    entry_price = exec_price
-                cost = round(exec_qty * entry_price, 2)
-                pnl = round(exec_val - cost, 2)
-                pnl_pct = round(((exec_price - entry_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
+                    tp2_target = float(matched_pos.get("tp2", 0) or 0)
+                    is_tp2 = tp2_target > 0 and abs(exec_price - tp2_target) / tp2_target < 0.02
+                    exit_reason = f"تحقيق الهدف الثاني (TP2: ${exec_price}) وتسييل الصفقة 🎯🚀" if is_tp2 else f"تحقيق الهدف الأول (TP1: ${exec_price}) | بيع 50% وتأمين الدخول 🎯"
 
-                tp2_target = float(matched_pos.get("tp2", 0) or 0)
-                is_tp2 = tp2_target > 0 and abs(exec_price - tp2_target) / tp2_target < 0.02
-                exit_reason = f"تحقيق الهدف الثاني (TP2: ${exec_price}) وتسييل الصفقة 🎯🚀" if is_tp2 else f"تحقيق الهدف الأول (TP1: ${exec_price}) | بيع 50% وتأمين الدخول 🎯"
+                    hist_entry = {
+                        "id": f"{matched_pos.get('id')}-{order_id or int(now)}",
+                        "execId": exec_id,
+                        "orderId": order_id,
+                        "symbol": sym,
+                        "baseCoin": matched_pos.get("baseCoin", sym.replace("USDT", "")),
+                        "entryPrice": entry_price,
+                        "closePrice": exec_price,
+                        "qty": exec_qty,
+                        "amountUsdt": cost,
+                        "netReturn": round(exec_val, 2),
+                        "realizedPnL": pnl,
+                        "pnlPct": pnl_pct,
+                        "exitReason": exit_reason,
+                        "closedAt": closed_at
+                    }
+                    history.insert(0, hist_entry)
+                    recorded_exec_ids.add(exec_id or order_id)
 
-                hist_entry = {
-                    "id": f"{matched_pos.get('id')}-{order_id or int(now)}",
-                    "execId": exec_id,
-                    "orderId": order_id,
-                    "symbol": sym,
-                    "baseCoin": matched_pos.get("baseCoin", sym.replace("USDT", "")),
-                    "entryPrice": entry_price,
-                    "closePrice": exec_price,
-                    "qty": exec_qty,
-                    "amountUsdt": cost,
-                    "netReturn": round(exec_val, 2),
-                    "realizedPnL": pnl,
-                    "pnlPct": pnl_pct,
-                    "exitReason": exit_reason,
-                    "closedAt": closed_at
-                }
-                history.insert(0, hist_entry)
-                recorded_exec_ids.add(exec_id or order_id)
+                    curr_qty = float(matched_pos.get("qty", 0) or 0)
+                    remaining_qty = max(0.0, curr_qty - exec_qty)
+                    if remaining_qty <= 0.001 or is_tp2:
+                        open_pos.remove(matched_pos)
+                        async_telegram_alert(
+                            f"🚀🚀 <b>تحقيق الهدف الثاني (TP2) وإغلاق الصفقة بالكامل!</b>\n\n"
+                            f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                            f"💵 <b>سعر التنفيذ:</b> <code>${exec_price:,.4f}</code>\n"
+                            f"💰 <b>الربح المحقق:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
+                            f"🎯 <b>العائد الإجمالي:</b> ${exec_val:,.2f} USDT\n"
+                            f"✨ <i>ألف مبروك! اكتملت أهداف الصفقة 100% بنجاح.</i>"
+                        )
+                    else:
+                        matched_pos["qty"] = round(remaining_qty, 4)
+                        matched_pos["amountUsdt"] = round(max(0.0, float(matched_pos.get("amountUsdt", 0)) - cost), 2)
+                        matched_pos["tp1Executed"] = True
+                        matched_pos["tp1LockedPnL"] = pnl
+                        matched_pos["sl"] = entry_price
+                        matched_pos["setupName"] = f"صفقة حقيقية Bybit (تحقق الهدف الأول 🎯)"
+                        async_telegram_alert(
+                            f"🎯 <b>تحقيق الهدف الأول (TP1) بنجاح!</b>\n\n"
+                            f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                            f"💵 <b>سعر البيع (50%):</b> <code>${exec_price:,.4f}</code>\n"
+                            f"💰 <b>الربح المحقق الآن:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
+                            f"🛡️ <b>تأمين الصفقة:</b> تم رفع وقف الخسارة لسعر الدخول (<code>${entry_price:,.4f}</code>)\n"
+                            f"🚀 متبقي 50% مستمرة نحو الهدف الثاني (TP2: ${tp2_target:,.4f})!"
+                        )
+                    changed = True
 
-                curr_qty = float(matched_pos.get("qty", 0) or 0)
-                remaining_qty = max(0.0, curr_qty - exec_qty)
-                if remaining_qty <= 0.001 or is_tp2:
-                    open_pos.remove(matched_pos)
-                    # إشعار تيليجرام الفوري لتحقيق TP2 وإغلاق الصفقة
-                    async_telegram_alert(
-                        f"🚀🚀 <b>تحقيق الهدف الثاني (TP2) وإغلاق الصفقة بالكامل!</b>\n\n"
-                        f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
-                        f"💵 <b>سعر التنفيذ:</b> <code>${exec_price:,.4f}</code>\n"
-                        f"💰 <b>الربح المحقق:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
-                        f"🎯 <b>العائد الإجمالي:</b> ${exec_val:,.2f} USDT\n"
-                        f"✨ <i>ألف مبروك! اكتملت أهداف الصفقة 100% بنجاح.</i>"
-                    )
-                else:
-                    matched_pos["qty"] = round(remaining_qty, 4)
-                    matched_pos["amountUsdt"] = round(max(0.0, float(matched_pos.get("amountUsdt", 0)) - cost), 2)
-                    matched_pos["tp1Executed"] = True
-                    matched_pos["tp1LockedPnL"] = pnl
-                    matched_pos["sl"] = entry_price
-                    matched_pos["setupName"] = f"صفقة حقيقية Bybit (تحقق الهدف الأول 🎯)"
-                    # إشعار تيليجرام الفوري لتحقيق TP1 وتأمين الدخول
-                    async_telegram_alert(
-                        f"🎯 <b>تحقيق الهدف الأول (TP1) بنجاح!</b>\n\n"
-                        f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
-                        f"💵 <b>سعر البيع (50%):</b> <code>${exec_price:,.4f}</code>\n"
-                        f"💰 <b>الربح المحقق الآن:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
-                        f"🛡️ <b>تأمين الصفقة:</b> تم رفع وقف الخسارة لسعر الدخول (<code>${entry_price:,.4f}</code>)\n"
-                        f"🚀 متبقي 50% مستمرة نحو الهدف الثاني (TP2: ${tp2_target:,.4f})!"
-                    )
-                changed = True
-
-        if changed:
-            acc["openPositions"] = open_pos
-            acc["history"] = history
-            save_real_positions(acc)
+            if changed:
+                acc["openPositions"] = open_pos
+                acc["history"] = history
+                save_real_positions(acc)
     except Exception as ex:
         print(f"⚠️ Error syncing Bybit real executions: {ex}")
+
+    # Auto-reconcile positions with Bybit wallet balances & active orders
+    reconcile_positions_with_bybit_wallet()
 
 def get_real_positions_summary():
     sync_real_positions_with_bybit()
