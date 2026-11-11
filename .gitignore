@@ -2,6 +2,8 @@
 config.json
 bybit_config.json
 .env
+.env.*
+!.env.example
 secrets.json
 bot_state.json
 *.bak_*

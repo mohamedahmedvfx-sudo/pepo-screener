@@ -679,9 +679,20 @@ def load_bybit_config():
     }
 
 def save_bybit_config(api_key, api_secret):
+    k = api_key.strip()
+    s = api_secret.strip()
+    # Save primarily into .env (and refresh os.environ in memory)
+    try:
+        bot_protection.save_env_vars({
+            "BYBIT_API_KEY": k,
+            "BYBIT_API_SECRET": s,
+        })
+    except Exception:
+        pass
+
     cfg = {
-        "apiKey": api_key.strip(),
-        "apiSecret": api_secret.strip(),
+        "apiKey": k,
+        "apiSecret": s,
         "savedAt": datetime.now().isoformat()
     }
     for p in [os.path.join(WEB_DIR, "config.json"), os.path.join(os.path.dirname(WEB_DIR), "bybit_spot_trader", "config.json")]:

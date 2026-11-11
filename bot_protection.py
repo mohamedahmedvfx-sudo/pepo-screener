@@ -22,6 +22,7 @@ WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(WEB_DIR, "bot_settings.json")
 STATE_FILE = os.path.join(WEB_DIR, "bot_state.json")
 SECRETS_FILE = os.path.join(WEB_DIR, "secrets.json")
+ENV_FILE = os.path.join(WEB_DIR, ".env")
 
 DEFAULT_SETTINGS = {
     # --- Protective stop ---
@@ -53,8 +54,64 @@ _LOCK = threading.RLock()
 
 
 # ==============================================================================
-# 🔐 Secrets
+# 🔐 Secrets (.env + environment variables + secrets.json fallback)
 # ==============================================================================
+def load_dotenv_file(env_path=ENV_FILE):
+    """Load key=value pairs from .env into os.environ (without overriding existing OS env)."""
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ and v:
+                    os.environ[k] = v
+    except Exception as e:
+        print(f"⚠️ [Secrets] Could not load .env: {e}")
+
+
+def save_env_vars(updates, env_path=ENV_FILE):
+    """Safely update key=value pairs in .env and refresh os.environ in memory."""
+    with _LOCK:
+        existing = {}
+        order = []
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for raw_line in f:
+                        line = raw_line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            if k not in existing:
+                                order.append(k)
+                            existing[k] = v.strip().strip('"').strip("'")
+            except Exception:
+                pass
+        for k, v in updates.items():
+            k_clean = str(k).strip()
+            v_clean = str(v).strip()
+            if k_clean not in existing:
+                order.append(k_clean)
+            existing[k_clean] = v_clean
+            os.environ[k_clean] = v_clean
+        try:
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write("# Bybit Spot AI Screener Pro - Local Secrets (NEVER COMMIT TO GIT)\n")
+                for k in order:
+                    f.write(f"{k}={existing[k]}\n")
+        except Exception as e:
+            print(f"⚠️ [Secrets] Could not save .env: {e}")
+
+
+load_dotenv_file()
+
+
 def get_secret(name, default=""):
     """Read a secret from environment variables first, then from secrets.json."""
     val = os.environ.get(name)
