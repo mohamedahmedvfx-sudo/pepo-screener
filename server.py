@@ -1094,6 +1094,194 @@ def save_real_positions(data, force=False):
 _LAST_BYBIT_SYNC = 0
 _LAST_WALLET_RECONCILE = 0
 
+
+def fetch_spot_open_orders(symbol=None):
+    """Fetch both standard Spot orders (Order) and conditional Spot orders (StopOrder)."""
+    combined = []
+    seen_ids = set()
+    base_params = {"category": "spot"}
+    if symbol:
+        base_params["symbol"] = symbol
+
+    first_res = None
+    for order_filter in (None, "StopOrder"):
+        params = dict(base_params)
+        if order_filter:
+            params["orderFilter"] = order_filter
+        res = bybit_signed_request("GET", "/v5/order/realtime", params=params)
+        if first_res is None:
+            first_res = res
+        if res.get("retCode") == 0:
+            for item in res.get("result", {}).get("list", []):
+                oid = item.get("orderId")
+                if oid and oid in seen_ids:
+                    continue
+                if oid:
+                    seen_ids.add(oid)
+                if not item.get("orderFilter"):
+                    item["orderFilter"] = order_filter or "Order"
+                combined.append(item)
+
+    if first_res and first_res.get("retCode") == 0:
+        return {"retCode": 0, "retMsg": "OK", "result": {"category": "spot", "list": combined}}
+    return first_res or {"retCode": -1, "retMsg": "Failed to fetch open orders", "result": {"list": combined}}
+
+
+def cancel_spot_order_ids(symbol, order_ids_raw, order_filter=None):
+    """Cancel one or more comma-separated/list Spot order IDs (supports both Order & StopOrder)."""
+    if not symbol or not order_ids_raw:
+        return []
+    if isinstance(order_ids_raw, str):
+        ids = [x.strip() for x in order_ids_raw.split(",") if x.strip()]
+    else:
+        ids = [str(x).strip() for x in order_ids_raw if str(x).strip()]
+
+    results = []
+    for oid in ids:
+        body = {"category": "spot", "symbol": symbol, "orderId": oid}
+        if order_filter:
+            body["orderFilter"] = order_filter
+        res = bybit_signed_request("POST", "/v5/order/cancel", json_body=body)
+        if res.get("retCode") != 0 and order_filter is None:
+            stop_body = dict(body, orderFilter="StopOrder")
+            res_stop = bybit_signed_request("POST", "/v5/order/cancel", json_body=stop_body)
+            if res_stop.get("retCode") == 0:
+                res = res_stop
+        results.append(res)
+    return results
+
+
+def create_spot_stop_order(symbol, qty, trigger_price, order_type="Market", limit_price=None, tick_size="0.0001", base_prec="0.01"):
+    """Place a Spot conditional StopOrder on Bybit (does NOT lock wallet balance until triggerPrice hits)."""
+    qty_str = round_to_step(qty, base_prec, rounding=ROUND_DOWN)
+    trig_str = round_to_step(trigger_price, tick_size)
+    if float(qty_str or 0) <= 0 or float(trig_str or 0) <= 0:
+        return False, None, {"retCode": -1, "retMsg": "Invalid qty or triggerPrice for StopOrder"}
+
+    body = {
+        "category": "spot",
+        "symbol": symbol,
+        "side": "Sell",
+        "orderType": order_type,
+        "qty": qty_str,
+        "triggerPrice": trig_str,
+        "orderFilter": "StopOrder",
+    }
+    if order_type == "Limit":
+        body["price"] = round_to_step(limit_price or trigger_price, tick_size)
+        body["timeInForce"] = "GTC"
+
+    res = bybit_signed_request("POST", "/v5/order/create", json_body=body)
+    ok = res.get("retCode") == 0
+    oid = res.get("result", {}).get("orderId") if ok else None
+    return ok, oid, res
+
+
+def place_protective_exit_orders(symbol, sell_qty, tp1=None, tp2=None, tp_single=None, sl=None, tp_strategy="TP1_TP2", tick_size="0.0001", base_prec="0.01"):
+    """Place non-locking Bybit Spot StopOrders for TP (Limit) and SL (Market) so SL works 24/7 even when PC is off."""
+    tp1_f = float(tp1 or 0)
+    tp2_f = float(tp2 or 0)
+    tp_single_f = float(tp_single or 0)
+    sl_f = float(sl or 0)
+    is_split = (tp_strategy == "TP1_TP2" and tp1_f > 0 and tp2_f > 0)
+
+    tp_ids = []
+    sl_ids = []
+    errors = []
+
+    if is_split:
+        half1 = float(round_to_step(sell_qty / 2.0, base_prec, rounding=ROUND_DOWN))
+        half2 = float(round_to_step(sell_qty - half1, base_prec, rounding=ROUND_DOWN))
+        for h_q, h_tp in ((half1, tp1_f), (half2, tp2_f)):
+            if h_q > 0 and h_tp > 0:
+                ok, oid, res = create_spot_stop_order(symbol, h_q, h_tp, order_type="Limit", limit_price=h_tp, tick_size=tick_size, base_prec=base_prec)
+                if ok and oid:
+                    tp_ids.append(oid)
+                else:
+                    errors.append(f"TP StopOrder: {res.get('retMsg')}")
+    else:
+        target = tp_single_f if tp_single_f > 0 else tp1_f
+        if target > 0 and sell_qty > 0:
+            ok, oid, res = create_spot_stop_order(symbol, sell_qty, target, order_type="Limit", limit_price=target, tick_size=tick_size, base_prec=base_prec)
+            if ok and oid:
+                tp_ids.append(oid)
+            else:
+                errors.append(f"TP StopOrder: {res.get('retMsg')}")
+
+    if sl_f > 0 and sell_qty > 0:
+        if is_split:
+            half1 = float(round_to_step(sell_qty / 2.0, base_prec, rounding=ROUND_DOWN))
+            half2 = float(round_to_step(sell_qty - half1, base_prec, rounding=ROUND_DOWN))
+            sl_slices = [q for q in (half1, half2) if q > 0]
+        else:
+            sl_slices = [sell_qty]
+        for s_q in sl_slices:
+            ok, oid, res = create_spot_stop_order(symbol, s_q, sl_f, order_type="Market", tick_size=tick_size, base_prec=base_prec)
+            if ok and oid:
+                sl_ids.append(oid)
+            else:
+                errors.append(f"SL StopOrder: {res.get('retMsg')}")
+
+    tp_msg_parts = []
+    if tp_ids:
+        if is_split:
+            tp_msg_parts.append(f"أهداف الربح المشروطة (50% عند ${tp1_f} و 50% عند ${tp2_f})")
+        else:
+            tp_msg_parts.append(f"هدف الربح المشروط (عند ${tp_single_f or tp1_f})")
+    if sl_ids:
+        tp_msg_parts.append(f"وقف خسارة سحابي حقيقي على Bybit عند ${sl_f} (يعمل حتى لو الجهاز مغلق)")
+
+    return {
+        "tpOrderId": ", ".join(tp_ids) if tp_ids else None,
+        "tpOrderFilter": "StopOrder" if tp_ids else None,
+        "slOrderId": ", ".join(sl_ids) if sl_ids else None,
+        "slOrderFilter": "StopOrder" if sl_ids else None,
+        "tpMessage": "تم تفعيل " + " + ".join(tp_msg_parts) if tp_msg_parts else None,
+        "errors": errors,
+    }
+
+
+def sync_cloud_sl_order(pos, new_sl):
+    """Replace Bybit cloud SL StopOrder when protective stop moves up (Breakeven / Lock TP1 / Trailing)."""
+    sym = pos.get("symbol")
+    if not sym or not new_sl or float(new_sl) <= 0:
+        return False
+    try:
+        old_sl_ids = pos.get("slOrderId")
+        if old_sl_ids:
+            cancel_spot_order_ids(sym, old_sl_ids, order_filter=pos.get("slOrderFilter") or "StopOrder")
+            time.sleep(0.2)
+
+        qty = float(pos.get("qty") or 0)
+        base_coin = pos.get("baseCoin", sym.replace("USDT", ""))
+        try:
+            wb = bybit_signed_request("GET", "/v5/account/wallet-balance", params={"accountType": "UNIFIED", "coin": base_coin})
+            c_list = wb.get("result", {}).get("list", [{}])[0].get("coin", [])
+            if c_list:
+                w_bal = float(c_list[0].get("walletBalance", 0) or 0)
+                if w_bal > 0:
+                    qty = w_bal
+        except Exception:
+            pass
+
+        if qty <= 0:
+            return False
+
+        info = get_instrument_info(sym)
+        tick_size = info.get("priceFilter", {}).get("tickSize", "0.0001")
+        base_prec = info.get("lotSizeFilter", {}).get("basePrecision", "0.01")
+        ok, oid, res = create_spot_stop_order(sym, qty, float(new_sl), order_type="Market", tick_size=tick_size, base_prec=base_prec)
+        if ok and oid:
+            pos["slOrderId"] = oid
+            pos["slOrderFilter"] = "StopOrder"
+            print(f"☁️ [Cloud SL Synced] {sym}: StopOrder moved to ${new_sl} (OrderId: {oid})")
+            return True
+        print(f"⚠️ [Cloud SL Sync] {sym} failed: {res.get('retMsg')}")
+    except Exception as e:
+        print(f"⚠️ [Cloud SL Sync Error] {sym}: {e}")
+    return False
+
+
 def reconcile_positions_with_bybit_wallet():
     global _LAST_WALLET_RECONCILE
     now = time.time()
@@ -1122,7 +1310,7 @@ def reconcile_positions_with_bybit_wallet():
                     "usdValue": usd
                 }
 
-        orders_res = bybit_signed_request("GET", "/v5/order/realtime", params={"category": "spot"})
+        orders_res = fetch_spot_open_orders()
         open_orders = orders_res.get("result", {}).get("list", []) if orders_res.get("retCode") == 0 else []
         orders_by_sym = {}
         for o in open_orders:
@@ -1194,13 +1382,25 @@ def reconcile_positions_with_bybit_wallet():
                 if entry_p <= 0:
                     entry_p = round(usd_val / bal, 6) if bal > 0 else 1.0
 
-                sell_orders = [o for o in sym_orders if o.get("side") == "Sell" and o.get("orderType") == "Limit"]
-                sell_orders.sort(key=lambda x: float(x.get("price", 0) or 0))
+                tp_sell_orders = []
+                sl_stop_orders = []
+                for o in sym_orders:
+                    if o.get("side") != "Sell":
+                        continue
+                    trig = float(o.get("triggerPrice", 0) or 0)
+                    px = float(o.get("price", 0) or 0)
+                    if o.get("orderFilter") == "StopOrder" and trig > 0 and trig < entry_p:
+                        sl_stop_orders.append(o)
+                    elif o.get("orderType") == "Limit" or (trig > 0 and trig >= entry_p):
+                        tp_sell_orders.append(o)
 
-                tp1 = float(sell_orders[0]["price"]) if len(sell_orders) > 0 else round(entry_p * 1.05, 4)
-                tp2 = float(sell_orders[1]["price"]) if len(sell_orders) > 1 else round(entry_p * 1.10, 4)
-                tp_order_ids = ", ".join([o["orderId"] for o in sell_orders]) if sell_orders else None
-                sl = round(entry_p * 0.95, 6)
+                tp_sell_orders.sort(key=lambda x: float(x.get("price") or x.get("triggerPrice") or 0))
+                tp1 = float(tp_sell_orders[0].get("price") or tp_sell_orders[0].get("triggerPrice") or 0) if len(tp_sell_orders) > 0 else round(entry_p * 1.05, 4)
+                tp2 = float(tp_sell_orders[1].get("price") or tp_sell_orders[1].get("triggerPrice") or 0) if len(tp_sell_orders) > 1 else round(entry_p * 1.10, 4)
+                tp_order_ids = ", ".join([o["orderId"] for o in tp_sell_orders]) if tp_sell_orders else None
+                tp_order_filter = tp_sell_orders[0].get("orderFilter", "Order") if tp_sell_orders else None
+                sl = float(sl_stop_orders[0]["triggerPrice"]) if sl_stop_orders else round(entry_p * 0.95, 6)
+                sl_order_ids = ", ".join([o["orderId"] for o in sl_stop_orders]) if sl_stop_orders else None
 
                 new_pos = {
                     "id": f"REAL-{int(time.time())}-{coin_name[:4]}",
@@ -1220,11 +1420,15 @@ def reconcile_positions_with_bybit_wallet():
                     "tp2": tp2,
                     "tp3": None,
                     "sl": sl,
+                    "originalSl": sl,
                     "setupName": "صفقة حقيقية Bybit",
                     "openedAt": opened_at,
                     "status": "OPEN",
                     "orderId": sym_buys[0].get("orderId", "") if sym_buys else "",
-                    "tpOrderId": tp_order_ids
+                    "tpOrderId": tp_order_ids,
+                    "tpOrderFilter": tp_order_filter,
+                    "slOrderId": sl_order_ids,
+                    "slOrderFilter": "StopOrder" if sl_order_ids else None
                 }
                 open_pos.insert(0, new_pos)
                 existing_syms.add(sym)
@@ -1269,7 +1473,7 @@ def sync_real_positions_with_bybit():
                 if h.get("orderId"):
                     recorded_exec_ids.add(h["orderId"])
 
-            for e in exec_list:
+            for e in reversed(exec_list):
                 if e.get("side") != "Sell":
                     continue
                 exec_id = e.get("execId")
@@ -1305,12 +1509,13 @@ def sync_real_positions_with_bybit():
                     tp1_target = float(matched_pos.get("tp1", 0) or 0)
                     is_tp2 = tp2_target > 0 and exec_price >= tp2_target * 0.985
                     is_tp1 = (not is_tp2) and (tp1_target > 0 and exec_price >= tp1_target * 0.985)
+                    is_sl_hit = (not is_tp2 and not is_tp1 and pnl <= 0)
                     if is_tp2:
                         exit_reason = f"تحقيق الهدف الثاني (TP2: ${exec_price}) وتسييل الصفقة 🎯🚀"
                     elif is_tp1 or pnl > 0:
                         exit_reason = f"تحقيق الهدف الأول (TP1: ${exec_price}) | بيع 50% وتأمين الدخول 🎯"
                     else:
-                        exit_reason = f"بيع / وقف خسارة (${exec_price}) 🛑"
+                        exit_reason = f"تنفيذ وقف الخسارة السحابي على Bybit (${exec_price}) 🛑"
 
                     hist_entry = {
                         "id": f"{matched_pos.get('id')}-{order_id or int(now)}",
@@ -1333,19 +1538,36 @@ def sync_real_positions_with_bybit():
 
                     curr_qty = float(matched_pos.get("qty", 0) or 0)
                     remaining_qty = max(0.0, curr_qty - exec_qty)
-                    if remaining_qty <= 0.001 or is_tp2:
+                    remaining_usd = remaining_qty * exec_price
+                    if remaining_qty <= 0.001 or remaining_usd < 1.0 or is_tp2:
                         open_pos.remove(matched_pos)
-                        async_telegram_alert(
-                            f"🚀🚀 <b>تحقيق الهدف الثاني (TP2) وإغلاق الصفقة بالكامل!</b>\n\n"
-                            f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
-                            f"💵 <b>سعر التنفيذ:</b> <code>${exec_price:,.4f}</code>\n"
-                            f"💰 <b>الربح المحقق:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
-                            f"🎯 <b>العائد الإجمالي:</b> ${exec_val:,.2f} USDT\n"
-                            f"✨ <i>ألف مبروك! اكتملت أهداف الصفقة 100% بنجاح.</i>"
-                        )
+                        if matched_pos.get("tpOrderId"):
+                            cancel_spot_order_ids(sym, matched_pos.get("tpOrderId"), order_filter=matched_pos.get("tpOrderFilter"))
+                        if matched_pos.get("slOrderId"):
+                            cancel_spot_order_ids(sym, matched_pos.get("slOrderId"), order_filter=matched_pos.get("slOrderFilter") or "StopOrder")
+                        if is_sl_hit:
+                            async_telegram_alert(
+                                f"🛑 <b>تم تنفيذ وقف الخسارة السحابي على Bybit!</b>\n\n"
+                                f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                                f"📉 <b>سعر التنفيذ:</b> <code>${exec_price:,.4f}</code>\n"
+                                f"💸 <b>الصافي:</b> <b>{pnl:,.2f} USDT ({pnl_pct:+.2f}%)</b>\n"
+                                f"💵 <b>المسترد للكاش:</b> ${exec_val:,.2f} USDT"
+                            )
+                        else:
+                            async_telegram_alert(
+                                f"🚀🚀 <b>تحقيق الهدف الثاني (TP2) وإغلاق الصفقة بالكامل!</b>\n\n"
+                                f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                                f"💵 <b>سعر التنفيذ:</b> <code>${exec_price:,.4f}</code>\n"
+                                f"💰 <b>الربح المحقق:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
+                                f"🎯 <b>العائد الإجمالي:</b> ${exec_val:,.2f} USDT\n"
+                                f"✨ <i>ألف مبروك! اكتملت أهداف الصفقة 100% بنجاح.</i>"
+                            )
+                    elif is_sl_hit:
+                        matched_pos["qty"] = round(remaining_qty, 6)
+                        matched_pos["amountUsdt"] = round(max(0.0, float(matched_pos.get("amountUsdt", 0)) - cost), 2)
                     else:
                         be_price = bot_protection.breakeven_price(entry_price)
-                        matched_pos["qty"] = round(remaining_qty, 4)
+                        matched_pos["qty"] = round(remaining_qty, 6)
                         matched_pos["amountUsdt"] = round(max(0.0, float(matched_pos.get("amountUsdt", 0)) - cost), 2)
                         matched_pos["tp1Executed"] = True
                         matched_pos["tp1LockedPnL"] = pnl
@@ -1354,12 +1576,13 @@ def sync_real_positions_with_bybit():
                         matched_pos["sl"] = max(float(matched_pos.get("sl") or 0), be_price)
                         matched_pos["protectionStage"] = "BREAKEVEN"
                         matched_pos["setupName"] = f"صفقة حقيقية Bybit (تحقق الهدف الأول 🎯)"
+                        sync_cloud_sl_order(matched_pos, matched_pos["sl"])
                         async_telegram_alert(
                             f"🎯 <b>تحقيق الهدف الأول (TP1) بنجاح!</b>\n\n"
                             f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
                             f"💵 <b>سعر البيع (50%):</b> <code>${exec_price:,.4f}</code>\n"
                             f"💰 <b>الربح المحقق الآن:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
-                            f"🛡️ <b>تأمين الصفقة:</b> تم رفع وقف الخسارة لسعر الدخول + عمولة المنصة (<code>${matched_pos['sl']:,.4f}</code>)\n"
+                            f"🛡️ <b>تأمين الصفقة:</b> تم رفع وقف الخسارة على السيرفر وعلى Bybit لسعر الدخول + عمولة المنصة (<code>${matched_pos['sl']:,.4f}</code>)\n"
                             f"🚀 متبقي 50% مستمرة نحو الهدف الثاني (TP2: ${tp2_target:,.4f})!"
                         )
                     changed = True
@@ -1631,10 +1854,7 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
         elif path == "/api/orders/open":
             qs = urllib.parse.parse_qs(parsed.query)
             sym = qs.get("symbol", [None])[0]
-            params = {"category": "spot"}
-            if sym:
-                params["symbol"] = sym
-            res = bybit_signed_request("GET", "/v5/order/realtime", params=params)
+            res = fetch_spot_open_orders(sym)
             self._send_json(res)
             return
 
@@ -1857,10 +2077,25 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                     if not exec_qty:
                         exec_qty = float(qty) if order_type == "Limit" else 0
                         
+                    entry_p = exec_price or float(orders[0].get("basePrice", 0) if orders else 0)
+                    if not entry_p or entry_p <= 0:
+                        try:
+                            tickers = get_all_spot_tickers_cached(ttl=2.0)
+                            entry_p = float(tickers.get(symbol, 0) or 0)
+                        except Exception:
+                            pass
+                    if not entry_p or entry_p <= 0:
+                        entry_p = float(req_json.get("price") or 0)
+
+                    prot_settings = bot_protection.load_settings()
+                    default_sl_pct = float(prot_settings.get("defaultStopLossPct", 5.0) or 5.0) / 100.0
+                    effective_sl = float(sl) if (sl and float(sl) > 0) else (round(entry_p * (1.0 - default_sl_pct), 6) if entry_p > 0 else None)
+
                     tp_order_id = None
-                    if order_type == "Market" and tp and exec_qty > 0:
-                        # In spot market buys, Bybit deducts spot fee (0.1%) from base coin.
-                        # Query wallet balance or subtract 0.1% to get true available quantity to sell:
+                    tp_order_filter = None
+                    sl_order_id = None
+                    sl_order_filter = None
+                    if order_type == "Market" and exec_qty > 0 and (tp or req_json.get("tp1") or effective_sl):
                         sell_qty = exec_qty * 0.999
                         base_coin = symbol.replace("USDT", "")
                         try:
@@ -1873,85 +2108,32 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                         except Exception:
                             pass
 
-                        tp_strategy = req_json.get("tpStrategy", "TP1_TP2")
-                        tp1_target = req_json.get("tp1")
-                        tp2_target = req_json.get("tp2")
-
-                        # If TP1_TP2 strategy is chosen and both targets exist, split 50% / 50%
-                        if tp_strategy == "TP1_TP2" and tp1_target and tp2_target and float(tp1_target) > 0 and float(tp2_target) > 0:
-                            half1 = float(round_to_step(sell_qty / 2.0, base_prec, rounding=ROUND_DOWN))
-                            half2 = float(round_to_step(sell_qty - half1, base_prec, rounding=ROUND_DOWN))
-
-                            order_ids = []
-                            for h_qty, h_tp in [(half1, tp1_target), (half2, tp2_target)]:
-                                if h_qty > 0:
-                                    s_body = {
-                                        "category": "spot",
-                                        "symbol": symbol,
-                                        "side": "Sell",
-                                        "orderType": "Limit",
-                                        "qty": round_to_step(h_qty, base_prec, rounding=ROUND_DOWN),
-                                        "price": round_to_step(h_tp, tick_size),
-                                        "timeInForce": "GTC"
-                                    }
-                                    h_res = bybit_signed_request("POST", "/v5/order/create", json_body=s_body)
-                                    if h_res.get("retCode") == 0:
-                                        order_ids.append(h_res.get("result", {}).get("orderId"))
-                            if order_ids:
-                                tp_order_id = ", ".join(order_ids)
-                                res["tpOrderId"] = tp_order_id
-                                res["tpMessage"] = f"تم تفعيل هدفي الخروج (50% عند ${tp1_target} و 50% عند ${tp2_target}) مباشرة في دفتر طلبات Bybit!"
-                        else:
-                            # Single TP order
-                            sell_body = {
-                                "category": "spot",
-                                "symbol": symbol,
-                                "side": "Sell",
-                                "orderType": "Limit",
-                                "qty": round_to_step(sell_qty, base_prec, rounding=ROUND_DOWN),
-                                "price": round_to_step(tp, tick_size),
-                                "timeInForce": "GTC"
-                            }
-
-                            tp_res = bybit_signed_request("POST", "/v5/order/create", json_body=sell_body)
-                            if tp_res.get("retCode") == 0:
-                                tp_order_id = tp_res.get("result", {}).get("orderId")
-                                res["tpOrderId"] = tp_order_id
-                                res["tpMessage"] = f"تم تفعيل أمر جني الأرباح (Limit Sell عند ${sell_body['price']}) مباشرة على Bybit!"
-                            else:
-                                print(f"⚠️ Initial TP/SL order returned code {tp_res.get('retCode')}: {tp_res.get('retMsg')} - retrying with exact wallet balance...")
-                                try:
-                                    wb2 = bybit_signed_request("GET", "/v5/account/wallet-balance", params={"accountType": "UNIFIED", "coin": base_coin})
-                                    c_list2 = wb2.get("result", {}).get("list", [{}])[0].get("coin", [])
-                                    if c_list2:
-                                        w_bal2 = float(c_list2[0].get("walletBalance", 0) or 0)
-                                        if w_bal2 > 0:
-                                            sell_body["qty"] = round_to_step(w_bal2, base_prec, rounding=ROUND_DOWN)
-                                            tp_res2 = bybit_signed_request("POST", "/v5/order/create", json_body=sell_body)
-                                            if tp_res2.get("retCode") == 0:
-                                                tp_order_id = tp_res2.get("result", {}).get("orderId")
-                                                res["tpOrderId"] = tp_order_id
-                                                sl_info = f" ووقف الخسارة عند ${sell_body['triggerPrice']}" if sl else ""
-                                                res["tpMessage"] = f"تم تفعيل أمر جني الأرباح (TP: ${sell_body['price']}){sl_info} رسمياً على Bybit!"
-                                except Exception as fb_err:
-                                    print(f"⚠️ Fallback TP/SL order error: {fb_err}")
+                        exit_info = place_protective_exit_orders(
+                            symbol=symbol,
+                            sell_qty=sell_qty,
+                            tp1=req_json.get("tp1"),
+                            tp2=req_json.get("tp2"),
+                            tp_single=tp,
+                            sl=effective_sl,
+                            tp_strategy=req_json.get("tpStrategy", "TP1_TP2"),
+                            tick_size=tick_size,
+                            base_prec=base_prec,
+                        )
+                        tp_order_id = exit_info.get("tpOrderId")
+                        tp_order_filter = exit_info.get("tpOrderFilter")
+                        sl_order_id = exit_info.get("slOrderId")
+                        sl_order_filter = exit_info.get("slOrderFilter")
+                        if tp_order_id:
+                            res["tpOrderId"] = tp_order_id
+                        if sl_order_id:
+                            res["slOrderId"] = sl_order_id
+                        if exit_info.get("tpMessage"):
+                            res["tpMessage"] = exit_info["tpMessage"]
+                        if exit_info.get("errors"):
+                            res["exitOrderWarnings"] = exit_info["errors"]
 
                     # Save to real_positions.json
                     real_acc = load_real_positions()
-                    entry_p = exec_price or float(orders[0].get("basePrice", 0) if orders else 0)
-                    if not entry_p or entry_p <= 0:
-                        try:
-                            tickers = get_all_spot_tickers_cached(ttl=2.0)
-                            entry_p = float(tickers.get(symbol, 0) or 0)
-                        except Exception:
-                            pass
-                    if not entry_p or entry_p <= 0:
-                        entry_p = float(req_json.get("price") or 0)
-
-                    prot_settings = bot_protection.load_settings()
-                    default_sl_pct = float(prot_settings.get("defaultStopLossPct", 4.2) or 4.2) / 100.0
-                    effective_sl = float(sl) if (sl and float(sl) > 0) else (round(entry_p * (1.0 - default_sl_pct), 6) if entry_p > 0 else None)
-
                     new_real_pos = {
                         "id": f"REAL-{int(time.time())}-{symbol[:4]}",
                         "symbol": symbol,
@@ -1977,10 +2159,14 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                         "openedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "OPEN",
                         "orderId": order_id,
-                        "tpOrderId": tp_order_id
+                        "tpOrderId": tp_order_id,
+                        "tpOrderFilter": tp_order_filter,
+                        "slOrderId": sl_order_id,
+                        "slOrderFilter": sl_order_filter,
                     }
                     real_acc["openPositions"].insert(0, new_real_pos)
                     save_real_positions(real_acc)
+                    cloud_sl_tag = "☁️ مفعّل على سيرفر Bybit 24/7" if sl_order_id else "💻 محمي بالحارس المحلي"
                     # إشعار تيليجرام الفوري عند فتح صفقة جديدة
                     async_telegram_alert(
                         f"🛒 <b>تم فتح صفقة جديدة على منصة Bybit!</b>\n\n"
@@ -1989,7 +2175,7 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                         f"💵 <b>المبلغ المستثمر:</b> <code>${new_real_pos['amountUsdt']:,.2f} USDT</code>\n"
                         f"🎯 <b>الهدف الأول (TP1):</b> <code>${new_real_pos.get('tp1', 'N/A')}</code>\n"
                         f"🚀 <b>الهدف الثاني (TP2):</b> <code>${new_real_pos.get('tp2', 'N/A')}</code>\n"
-                        f"🛡️ <b>وقف الخسارة (SL):</b> <code>${new_real_pos.get('sl', 'N/A')}</code>\n"
+                        f"🛡️ <b>وقف الخسارة (SL):</b> <code>${new_real_pos.get('sl', 'N/A')}</code> ({cloud_sl_tag})\n"
                         f"⚙️ <b>النموذج الفني:</b> {new_real_pos.get('setupName', 'صفقة فورية Bybit')}"
                     )
                 except Exception as e:
@@ -2007,13 +2193,11 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                 return
             sym = pos["symbol"]
             qty = pos.get("qty", 0)
-            tp_order_id = pos.get("tpOrderId")
-            # 1. Cancel open TP order if any
-            if tp_order_id:
-                try:
-                    bybit_signed_request("POST", "/v5/order/cancel", json_body={"category": "spot", "symbol": sym, "orderId": tp_order_id})
-                except Exception:
-                    pass
+            # 1. Cancel open TP & SL orders (regular or StopOrder)
+            if pos.get("tpOrderId"):
+                cancel_spot_order_ids(sym, pos.get("tpOrderId"), order_filter=pos.get("tpOrderFilter"))
+            if pos.get("slOrderId"):
+                cancel_spot_order_ids(sym, pos.get("slOrderId"), order_filter=pos.get("slOrderFilter") or "StopOrder")
             # 2. Place market sell order
             info = get_instrument_info(sym)
             base_prec = info.get("lotSizeFilter", {}).get("basePrecision", "0.01")
@@ -2121,12 +2305,9 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
         elif path == "/api/order/cancel":
             symbol = req_json.get("symbol", "").upper()
             order_id = req_json.get("orderId", "")
-            body = {
-                "category": "spot",
-                "symbol": symbol,
-                "orderId": order_id
-            }
-            res = bybit_signed_request("POST", "/v5/order/cancel", json_body=body)
+            order_filter = req_json.get("orderFilter")
+            results = cancel_spot_order_ids(symbol, order_id, order_filter=order_filter)
+            res = results[0] if results else {"retCode": -1, "retMsg": "Missing orderId"}
             self._send_json(res)
             return
 
@@ -2398,34 +2579,32 @@ def background_stop_loss_guard():
                     stage_changed = (upd["stage"] != prev_stage)
                     sl_jump_pct = ((upd["sl"] - old_sl) / old_sl * 100.0) if old_sl > 0 else 100.0
                     if stage_changed or sl_jump_pct >= 0.6:
+                        cloud_synced = sync_cloud_sl_order(pos, upd["sl"])
+                        cloud_note = "\n☁️ <i>تم تحديث أمر وقف الخسارة السحابي على Bybit تلقائياً.</i>" if cloud_synced else ""
                         async_telegram_alert(
                             f"🛡️ <b>ترقية حماية الصفقة تلقائياً ({upd['stage']})!</b>\n\n"
                             f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
                             f"📈 <b>السعر الحالي:</b> <code>${live_price:,.4f}</code> (أعلى قمة: <code>${upd['highest']:,.4f}</code>)\n"
                             f"🔒 <b>وقف الخسارة الجديد:</b> <code>${upd['sl']:,.4f}</code> (كان: <code>${old_sl:,.4f}</code>)\n"
-                            f"✨ <b>السبب:</b> {upd['reason']}"
+                            f"✨ <b>السبب:</b> {upd['reason']}{cloud_note}"
                         )
 
                 sl = float(pos.get("sl") or 0)
                 if sl > 0 and live_price <= sl:
                     print(f"\n🚨 [SL GUARD TRIGGERED] {sym}: live ${live_price} <= SL ${sl}!")
-                    # 1. Cancel open TP limit orders on Bybit for this symbol
-                    tp_ids = str(pos.get("tpOrderId") or "").split(",")
-                    for tpid in tp_ids:
-                        tpid = tpid.strip()
-                        if tpid:
-                            try:
-                                bybit_signed_request("POST", "/v5/order/cancel", json_body={"category": "spot", "symbol": sym, "orderId": tpid})
-                            except Exception:
-                                pass
+                    # 1. Cancel open TP & SL orders on Bybit for this symbol
+                    if pos.get("tpOrderId"):
+                        cancel_spot_order_ids(sym, pos.get("tpOrderId"), order_filter=pos.get("tpOrderFilter"))
+                    if pos.get("slOrderId"):
+                        cancel_spot_order_ids(sym, pos.get("slOrderId"), order_filter=pos.get("slOrderFilter") or "StopOrder")
                     time.sleep(0.4)
-                    # 2. Query available wallet balance and sell at Market
+                    # 2. Query available wallet balance and sell at Market if not already sold by cloud StopOrder
                     base_coin = pos.get("baseCoin", sym.replace("USDT", ""))
                     try:
                         wb = bybit_signed_request("GET", "/v5/account/wallet-balance", params={"accountType": "UNIFIED", "coin": base_coin})
                         c_list = wb.get("result", {}).get("list", [{}])[0].get("coin", [])
                         avail_qty = float(c_list[0].get("walletBalance", 0) or 0) if c_list else 0
-                        if avail_qty > 0:
+                        if avail_qty > 0 and (avail_qty * live_price) >= 1.0:
                             info = get_instrument_info(sym)
                             base_prec = info.get("lotSizeFilter", {}).get("basePrecision", "0.01")
                             sell_q = round_to_step(avail_qty, base_prec, rounding=ROUND_DOWN)
@@ -2437,6 +2616,8 @@ def background_stop_loss_guard():
                                 "qty": str(sell_q)
                             })
                             print(f"🚨 [SL Guard] Market Sell for {sym} result: {m_res}")
+                        else:
+                            print(f"☁️ [SL Guard] {sym} already liquidated (remaining bal: {avail_qty}).")
                     except Exception as sl_err:
                         bot_protection.report_error(f"sl_sell_{sym}", f"فشل تنفيذ أمر بيع وقف الخسارة للعملة {sym}", sl_err)
 
@@ -2668,24 +2849,29 @@ def execute_auto_trade_cycle(force_run: bool = False) -> dict:
                 exec_qty = (amount_usdt * 0.999) / entry_p
 
             sell_qty = exec_qty * 0.999
-            half1 = float(round_to_step(sell_qty / 2.0, base_prec, rounding=ROUND_DOWN))
-            half2 = float(round_to_step(sell_qty - half1, base_prec, rounding=ROUND_DOWN))
-            tp_ids = []
-            for h_q, h_tp in [(half1, tp1), (half2, tp2)]:
-                if h_q > 0:
-                    s_res = bybit_signed_request("POST", "/v5/order/create", json_body={
-                        "category": "spot",
-                        "symbol": sym,
-                        "side": "Sell",
-                        "orderType": "Limit",
-                        "qty": round_to_step(h_q, base_prec, rounding=ROUND_DOWN),
-                        "price": round_to_step(h_tp, tick_size),
-                        "timeInForce": "GTC",
-                    })
-                    if s_res.get("retCode") == 0:
-                        tp_ids.append(s_res.get("result", {}).get("orderId"))
+            base_coin = sym.replace("USDT", "")
+            try:
+                wb = bybit_signed_request("GET", "/v5/account/wallet-balance", params={"accountType": "UNIFIED", "coin": base_coin})
+                c_list = wb.get("result", {}).get("list", [{}])[0].get("coin", [])
+                if c_list:
+                    w_bal = float(c_list[0].get("walletBalance", 0) or 0)
+                    if w_bal > 0:
+                        sell_qty = min(exec_qty, w_bal)
+            except Exception:
+                pass
 
-            tp_order_id = ", ".join(tp_ids) if tp_ids else None
+            exit_info = place_protective_exit_orders(
+                symbol=sym,
+                sell_qty=sell_qty,
+                tp1=tp1,
+                tp2=tp2,
+                sl=sl,
+                tp_strategy="TP1_TP2",
+                tick_size=tick_size,
+                base_prec=base_prec,
+            )
+            tp_order_id = exit_info.get("tpOrderId")
+            sl_order_id = exit_info.get("slOrderId")
             real_acc = load_real_positions()
             new_real_pos = {
                 "id": f"AUTO-REAL-{int(time.time())}-{sym[:4]}",
@@ -2714,12 +2900,16 @@ def execute_auto_trade_cycle(force_run: bool = False) -> dict:
                 "status": "OPEN",
                 "orderId": order_id,
                 "tpOrderId": tp_order_id,
+                "tpOrderFilter": exit_info.get("tpOrderFilter"),
+                "slOrderId": sl_order_id,
+                "slOrderFilter": exit_info.get("slOrderFilter"),
             }
             real_acc.setdefault("openPositions", []).insert(0, new_real_pos)
             save_real_positions(real_acc)
             bot_protection.record_auto_trade_execution(sym, "LIVE", exec_price, amount_usdt, score, setup_name)
             executed_list.append(new_real_pos)
             slots_left -= 1
+            cloud_sl_tag = "☁️ مفعّل على سيرفر Bybit 24/7" if sl_order_id else "💻 محمي بالحارس المحلي"
             async_telegram_alert(
                 f"🤖🔴 <b>تم تنفيذ صفقة حقيقية آلياً على Bybit!</b>\n\n"
                 f"🪙 <b>العملة:</b> <code>{sym}</code> (تقييم: <b>{score}/98</b>)\n"
@@ -2727,7 +2917,7 @@ def execute_auto_trade_cycle(force_run: bool = False) -> dict:
                 f"💵 <b>المبلغ المستثمر:</b> <code>${amount_usdt:,.2f} USDT</code>\n"
                 f"🎯 <b>الهدف الأول (50%):</b> <code>${tp1:,.4f}</code>\n"
                 f"🚀 <b>الهدف الثاني (50%):</b> <code>${tp2:,.4f}</code>\n"
-                f"🛡️ <b>وقف الخسارة المحمي:</b> <code>${sl:,.4f}</code>\n"
+                f"🛡️ <b>وقف الخسارة المحمي:</b> <code>${sl:,.4f}</code> ({cloud_sl_tag})\n"
                 f"⚙️ <b>النموذج:</b> {cand['setup_name']}"
             )
 

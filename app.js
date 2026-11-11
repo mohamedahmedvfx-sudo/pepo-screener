@@ -1459,28 +1459,39 @@ async function fetchOpenOrders() {
         }
 
         container.innerHTML = orders.map(o => {
-            const hasSl = o.triggerPrice && parseFloat(o.triggerPrice) > 0;
+            const trig = parseFloat(o.triggerPrice || 0);
+            const px = parseFloat(o.price || 0);
+            const hasSl = trig > 0;
+            const isStopOrder = o.orderFilter === 'StopOrder';
+            const isCloudSl = isStopOrder && o.side === 'Sell' && o.orderType === 'Market';
             const isTpSl = o.stopOrderType === 'tpslOrder' || hasSl;
+            const sideLabel = isCloudSl
+                ? '☁️ وقف خسارة سحابي (Stop-Market)'
+                : isStopOrder
+                    ? '🎯 جني أرباح مشروط (StopOrder)'
+                    : `${o.side === 'Buy' ? 'شراء' : 'بيع'} ${isTpSl ? '🎯 TP/SL مركب OCO' : `(${o.orderType})`}`;
+            const displayPrice = px > 0 ? px : trig;
+            const filterArg = o.orderFilter || 'Order';
             return `
             <div class="order-card-item">
                 <div class="oci-header">
                     <span class="oci-sym mono">${o.symbol}</span>
-                    <span class="oci-side ${o.side === 'Buy' ? 'text-green' : 'text-red'}">
-                        ${o.side === 'Buy' ? 'شراء' : 'بيع'} ${isTpSl ? '🎯 TP/SL مركب OCO' : `(${o.orderType})`}
+                    <span class="oci-side ${isCloudSl ? 'text-red' : (o.side === 'Buy' ? 'text-green' : 'text-red')}">
+                        ${sideLabel}
                     </span>
                     <span class="oci-time mono text-dim">${new Date(parseInt(o.createdTime)).toLocaleTimeString('ar-EG')}</span>
                 </div>
                 <div class="oci-details-grid">
-                    <div><span class="lbl">الهدف (TP):</span> <b class="mono text-green">$${parseFloat(o.price).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6})}</b></div>
-                    ${hasSl ? `<div><span class="lbl">الستوب (SL):</span> <b class="mono text-red">$${parseFloat(o.triggerPrice).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6})}</b></div>` : ''}
+                    ${px > 0 ? `<div><span class="lbl">السعر / الهدف:</span> <b class="mono text-green">$${px.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6})}</b></div>` : ''}
+                    ${hasSl ? `<div><span class="lbl">${isCloudSl ? 'سعر تفعيل الوقف (SL):' : 'سعر التفعيل (Trigger):'}</span> <b class="mono ${isCloudSl ? 'text-red' : 'text-cyan'}">$${trig.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6})}</b></div>` : ''}
                     <div><span class="lbl">الكمية:</span> <b class="mono">${parseFloat(o.qty).toLocaleString()}</b></div>
                     <div><span class="lbl">المنفذ:</span> <b class="mono text-cyan">${parseFloat(o.cumExecQty || 0).toLocaleString()}</b></div>
                 </div>
                 <div class="oci-actions" style="display:flex; gap:8px;">
-                    <button type="button" class="btn-chart-order" onclick="openChartForOpenOrder('${o.symbol}', '${o.price}', '${o.side}', '${o.triggerPrice || ''}')" title="عرض السعر على الشارت">
+                    <button type="button" class="btn-chart-order" onclick="openChartForOpenOrder('${o.symbol}', '${displayPrice}', '${o.side}', '${o.triggerPrice || ''}')" title="عرض السعر على الشارت">
                         📊 الشارت
                     </button>
-                    <button type="button" class="btn-cancel-order" onclick="cancelBybitOrder('${o.symbol}', '${o.orderId}')">
+                    <button type="button" class="btn-cancel-order" onclick="cancelBybitOrder('${o.symbol}', '${o.orderId}', '${filterArg}')">
                         ✖ إلغاء الأمر
                     </button>
                 </div>
@@ -1492,14 +1503,14 @@ async function fetchOpenOrders() {
     }
 }
 
-async function cancelBybitOrder(symbol, orderId) {
+async function cancelBybitOrder(symbol, orderId, orderFilter = null) {
     if (!confirm(`هل أنت متأكد من رغبتك في إلغاء الأمر لعملة ${symbol}؟`)) return;
 
     try {
         const res = await fetch('/api/order/cancel', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symbol, orderId })
+            body: JSON.stringify({ symbol, orderId, orderFilter })
         });
         const data = await res.json();
         if (data.retCode === 0) {
