@@ -371,11 +371,21 @@ function renderCards() {
     }
 
     if (list.length === 0) {
+        const isBearish = state.marketRegime && state.marketRegime.status === 'BEARISH';
         grid.innerHTML = `
-            <div class="empty-state">
-                <span style="font-size: 40px; margin-bottom: 12px;">🔍</span>
-                <h3>لا توجد صفقات مطابقة للبحث أو الفلتر حالياً</h3>
-                <p style="font-size: 13px; color: var(--text-dim); margin-top: 6px;">جرب تغيير التصنيف أو اضغط "فحص السوق اللحظي" للتحديث المباشر.</p>
+            <div class="empty-state" style="padding: 45px 20px; text-align: center; border-radius: 12px; background: rgba(255,255,255,0.02); border: 1px dashed var(--border-color);">
+                <span style="font-size: 46px; margin-bottom: 12px; display: inline-block;">${isBearish ? '🛡️' : '🔍'}</span>
+                <h3 style="color: ${isBearish ? '#f87171' : 'var(--text-primary)'}; font-size: 1.15rem; margin-bottom: 8px; font-weight: 700;">
+                    ${isBearish ? 'السوق العام في مسار تصحيحي هابط (Risk-Off) — نظام الحماية نشط' : 'لا توجد صفقات مؤكدة مطابقة للشروط الصارمة حالياً'}
+                </h3>
+                <p style="font-size: 13.5px; color: var(--text-secondary); max-width: 620px; margin: 0 auto 14px; line-height: 1.7;">
+                    ${isBearish 
+                        ? 'البيتكوين ($' + (state.marketRegime.btc_price ? Number(state.marketRegime.btc_price).toLocaleString() : '--') + ') يتداول تحت ضغط بيعي وأسفل متوسط EMA 50. يقوم نظام الحماية الصارم بمنع الدخول في صفقات الشراء العشوائية أثناء الهبوط لحماية رأس مالك، ولن تظهر أي صفقة إلا بعد اكتمال شمعة ارتداد خضراء مؤكدة بسيولة مؤسسية على فريم 4 ساعات.'
+                        : 'تم فحص جميع أزواج بايبت الفورية بالكامل، ولا يوجد أي زوج يستوفي حالياً شروط الأمان القياسية (نسبة نجاح تاريخية 60%+ ونسبة ربح إلى مخاطرة R:R > 1.85). الفاحص يراقب السوق لحظة بلحظة.'}
+                </p>
+                <div style="display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.04); border: 1px solid var(--border-color); border-radius: 8px; padding: 6px 14px; font-size: 12px; color: var(--text-dim);">
+                    <span>⏱️ الفاحص يقوم بإعادة المسح التلقائي كل 60 ثانية على فريم 4H</span>
+                </div>
             </div>
         `;
         return;
