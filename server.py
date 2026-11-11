@@ -1118,7 +1118,9 @@ def fetch_spot_open_orders(symbol=None):
                     continue
                 if oid:
                     seen_ids.add(oid)
-                if not item.get("orderFilter"):
+                if order_filter == "StopOrder" or item.get("stopOrderType") == "Stop":
+                    item["orderFilter"] = "StopOrder"
+                elif not item.get("orderFilter"):
                     item["orderFilter"] = order_filter or "Order"
                 combined.append(item)
 
@@ -1142,11 +1144,13 @@ def cancel_spot_order_ids(symbol, order_ids_raw, order_filter=None):
         if order_filter:
             body["orderFilter"] = order_filter
         res = bybit_signed_request("POST", "/v5/order/cancel", json_body=body)
-        if res.get("retCode") != 0 and order_filter is None:
-            stop_body = dict(body, orderFilter="StopOrder")
-            res_stop = bybit_signed_request("POST", "/v5/order/cancel", json_body=stop_body)
-            if res_stop.get("retCode") == 0:
-                res = res_stop
+        if res.get("retCode") != 0:
+            alt_body = {"category": "spot", "symbol": symbol, "orderId": oid}
+            if order_filter != "StopOrder":
+                alt_body["orderFilter"] = "StopOrder"
+            res_alt = bybit_signed_request("POST", "/v5/order/cancel", json_body=alt_body)
+            if res_alt.get("retCode") == 0:
+                res = res_alt
         results.append(res)
     return results
 
