@@ -2440,6 +2440,13 @@ function renderRealPositionsTable() {
 
         const tpText = pos.tp2 ? `TP1: $${pos.tp1} | TP2: $${pos.tp2}` : (pos.tp1 ? `TP: $${pos.tp1}` : '--');
         const slText = pos.sl ? `SL: $${pos.sl}` : '--';
+        const stageMap = {
+            INITIAL: '🛡️ وقف أساسي',
+            BREAKEVEN: '🔒 تأمين الدخول + العمولة',
+            LOCK_TP1: '🎯 قفل ربح TP1',
+            TRAILING: '🚀 وقف متحرك يلاحق القمة'
+        };
+        const stageBadge = stageMap[pos.protectionStage || 'INITIAL'] || '🛡️ محمي';
 
         return `
             <tr>
@@ -2460,6 +2467,7 @@ function renderRealPositionsTable() {
                 <td>
                     <div style="font-size: 11px; color: var(--green-profit); font-weight: 700;">🎯 ${tpText}</div>
                     <div style="font-size: 11px; color: var(--red-loss); font-weight: 700;">🛡️ ${slText}</div>
+                    <div style="font-size: 10.5px; color: #00F0FF; margin-top: 2px; font-weight: 700;">${stageBadge}</div>
                 </td>
                 <td>
                     <div class="mono font-bold ${pnlClass}" style="font-size: 15px;">
@@ -2554,3 +2562,247 @@ async function testTelegramAlert() {
         showToast('خطأ في الاتصال: ' + e.message, 'error');
     }
 }
+
+// ==============================================================================
+// 🛡️🤖 Capital Protection, Smart Auto-Trader & Backtest UI Controllers
+// ==============================================================================
+async function openProtectionModal() {
+    const modal = document.getElementById('protectionModal');
+    if (modal) modal.classList.remove('hidden');
+    await loadProtectionStatus();
+}
+
+function closeProtectionModal() {
+    const modal = document.getElementById('protectionModal');
+    if (modal) modal.classList.add('hidden');
+}
+
+async function loadProtectionStatus() {
+    try {
+        const res = await fetch('/api/protection/status');
+        const data = await res.json();
+        if (data.retCode !== 0) return;
+
+        const s = data.settings || {};
+        const g = data.guard || {};
+        const d = data.daily || {};
+        const a = data.autoTrader || {};
+
+        // Fill inputs
+        const setVal = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined) el.value = v; };
+        const setChk = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined) el.checked = !!v; };
+
+        setVal('cfgBreakevenBuffer', s.breakevenBufferPct ?? 0.25);
+        setVal('cfgTrailDistanceR', s.trailDistanceR ?? 1.0);
+        setVal('cfgDailyMaxLossPct', s.dailyMaxLossPct ?? 3.0);
+        setVal('cfgMaxOpenPositions', s.maxOpenPositions ?? 4);
+        setChk('cfgTrailingEnabled', s.trailingEnabled ?? true);
+        setChk('cfgLockTp1', s.lockTp1AtMidwayToTp2 ?? true);
+        setChk('cfgDailyLimitEnabled', s.dailyLossLimitEnabled ?? true);
+
+        setChk('cfgAutoTradeEnabled', s.autoTradeEnabled ?? false);
+        setVal('cfgAutoTradeMode', s.autoTradeMode ?? 'demo');
+        setVal('cfgAutoTradeMinScore', s.autoTradeMinScore ?? 86);
+        setVal('cfgAutoTradeAmountUsdt', s.autoTradeAmountUsdt ?? 15);
+        setVal('cfgAutoTradeMaxPerDay', s.autoTradeMaxPerDay ?? 3);
+        setVal('cfgAutoTradeCooldownHours', s.autoTradeCooldownHours ?? 12);
+        setChk('cfgAutoTradeRequireSafeMarket', s.autoTradeRequireSafeMarket ?? true);
+
+        // Update live status banners
+        const hbEl = document.getElementById('protGuardHeartbeat');
+        if (hbEl) {
+            const sec = g.lastOkSecondsAgo ?? 0;
+            hbEl.innerText = sec < 30 ? `نشط (${sec}ث) ✅` : `تأخر (${sec}ث) ⚠️`;
+            hbEl.className = `hs-val mono ${sec < 30 ? 'text-green' : 'text-red'}`;
+        }
+
+        const todayPnl = data.todayRealizedPnL ?? d.realizedToday ?? 0;
+        const pnlEl = document.getElementById('protTodayPnl');
+        if (pnlEl) {
+            pnlEl.innerText = `${todayPnl >= 0 ? '+' : ''}$${Number(todayPnl).toFixed(2)} USDT`;
+            pnlEl.className = `hs-val mono ${todayPnl >= 0 ? 'text-green' : 'text-red'}`;
+        }
+
+        const lockEl = document.getElementById('protDailyLockState');
+        const unlockBtn = document.getElementById('btnUnlockDaily');
+        if (lockEl) {
+            if (data.tradingLocked) {
+                lockEl.innerText = '🛑 مقفل لحماية رأس المال';
+                lockEl.className = 'hs-val mono text-red';
+                if (unlockBtn) unlockBtn.style.display = 'inline-block';
+            } else {
+                lockEl.innerText = 'آمن (التداول متاح) 🟢';
+                lockEl.className = 'hs-val mono text-green';
+                if (unlockBtn) unlockBtn.style.display = 'none';
+            }
+        }
+
+        const autoEl = document.getElementById('protAutoTraderState');
+        if (autoEl) {
+            const isOn = !!s.autoTradeEnabled;
+            const modeLbl = (s.autoTradeMode === 'live') ? 'حقيقي 🔴' : 'محاكاة 🎮';
+            autoEl.innerText = isOn ? `نشط (${modeLbl}) | اليوم: ${a.tradesToday || 0}/${s.autoTradeMaxPerDay || 3}` : 'متوقف (يدوي)';
+            autoEl.className = `hs-val mono ${isOn ? 'text-gold' : ''}`;
+        }
+
+        // Render Journal Analytics from realPositions or demo
+        const jCont = document.getElementById('journalAnalyticsContainer');
+        if (jCont) {
+            const an = state.realPositions?.analytics || state.demo?.analytics;
+            if (an && an.totalTrades > 0) {
+                jCont.innerHTML = `
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
+                        <div class="hs-card" style="padding:10px;"><span class="hs-lbl">إجمالي الصفقات المغلقة:</span><span class="hs-val mono">${an.totalTrades}</span></div>
+                        <div class="hs-card" style="padding:10px;"><span class="hs-lbl">نسبة النجاح الفعلية:</span><span class="hs-val mono text-green">${an.winRatePct}%</span></div>
+                        <div class="hs-card" style="padding:10px;"><span class="hs-lbl">معامل الربح (PF):</span><span class="hs-val mono text-gold">${an.profitFactor}</span></div>
+                        <div class="hs-card" style="padding:10px;"><span class="hs-lbl">متوسط الصفقة الرابحة:</span><span class="hs-val mono text-green">+$${an.avgWinUsdt}</span></div>
+                        <div class="hs-card" style="padding:10px;"><span class="hs-lbl">متوسط الصفقة الخاسرة:</span><span class="hs-val mono text-red">$${an.avgLossUsdt}</span></div>
+                        <div class="hs-card" style="padding:10px;"><span class="hs-lbl">التوقع الرياضي للصفقة:</span><span class="hs-val mono ${an.expectancyUsdt >= 0 ? 'text-green' : 'text-red'}">${an.expectancyUsdt >= 0 ? '+' : ''}$${an.expectancyUsdt}</span></div>
+                        <div class="hs-card" style="padding:10px;"><span class="hs-lbl">أطول سلسلة انتصارات:</span><span class="hs-val mono text-cyan">${an.maxWinStreak} متتالية 🔥</span></div>
+                    </div>
+                `;
+            } else {
+                jCont.innerHTML = 'لا توجد صفقات مغلقة كافية بعد لعرض التحليل الإحصائي.';
+            }
+        }
+    } catch (e) {
+        console.warn('loadProtectionStatus error:', e);
+    }
+}
+
+async function saveProtectionSettings() {
+    const getNum = (id, def) => { const v = parseFloat(document.getElementById(id)?.value); return isNaN(v) ? def : v; };
+    const getChk = (id) => !!document.getElementById(id)?.checked;
+
+    const payload = {
+        breakevenBufferPct: getNum('cfgBreakevenBuffer', 0.25),
+        trailDistanceR: getNum('cfgTrailDistanceR', 1.0),
+        dailyMaxLossPct: getNum('cfgDailyMaxLossPct', 3.0),
+        maxOpenPositions: parseInt(getNum('cfgMaxOpenPositions', 4), 10),
+        trailingEnabled: getChk('cfgTrailingEnabled'),
+        lockTp1AtMidwayToTp2: getChk('cfgLockTp1'),
+        dailyLossLimitEnabled: getChk('cfgDailyLimitEnabled'),
+        autoTradeEnabled: getChk('cfgAutoTradeEnabled'),
+        autoTradeMode: document.getElementById('cfgAutoTradeMode')?.value || 'demo',
+        autoTradeMinScore: parseInt(getNum('cfgAutoTradeMinScore', 86), 10),
+        autoTradeAmountUsdt: getNum('cfgAutoTradeAmountUsdt', 15),
+        autoTradeMaxPerDay: parseInt(getNum('cfgAutoTradeMaxPerDay', 3), 10),
+        autoTradeCooldownHours: getNum('cfgAutoTradeCooldownHours', 12),
+        autoTradeRequireSafeMarket: getChk('cfgAutoTradeRequireSafeMarket')
+    };
+
+    try {
+        const res = await fetch('/api/protection/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('✅ تم حفظ إعدادات الحماية والمتداول الآلي بنجاح!', 'success');
+            await loadProtectionStatus();
+        } else {
+            showToast('⚠️ تعذر حفظ الإعدادات', 'error');
+        }
+    } catch (e) {
+        showToast('خطأ في الاتصال: ' + e.message, 'error');
+    }
+}
+
+async function unlockDailyBreaker() {
+    if (!confirm('هل تريد بالفعل فك قفل الخسارة اليومية والسماح بفتح صفقات جديدة اليوم؟')) return;
+    try {
+        const res = await fetch('/api/protection/unlock-daily', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await res.json();
+        if (data.success) {
+            showToast('🔓 تم رفع قفل الخسارة اليومية بنجاح.', 'success');
+            await loadProtectionStatus();
+        }
+    } catch (e) {
+        showToast('خطأ: ' + e.message, 'error');
+    }
+}
+
+async function triggerAutoTraderNow() {
+    showToast('🤖 جاري فحص السوق وتنفيذ الفرص المطابقة للشروط...', 'info');
+    try {
+        const res = await fetch('/api/autotrader/run-now', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await res.json();
+        if (data.success) {
+            const count = data.count || 0;
+            if (count > 0) {
+                playAlertBeep();
+                showToast(`🚀 تم تنفيذ ${count} صفقة آلياً بنجاح!`, 'success');
+                await fetchDemoAccountState();
+                await fetchRealPositions();
+            } else {
+                showToast(`ℹ️ نتيجة الفحص الآلي: ${data.message || data.status || 'لا توجد فرص مطابقة حالياً'}`, 'info');
+            }
+            await loadProtectionStatus();
+        } else {
+            showToast('⚠️ ' + (data.error || 'تعذر تشغيل المتداول الآلي'), 'error');
+        }
+    } catch (e) {
+        showToast('خطأ: ' + e.message, 'error');
+    }
+}
+
+async function runBacktestFromUi() {
+    const btn = document.getElementById('btnRunBacktest');
+    const container = document.getElementById('backtestResultsContainer');
+    if (!container) return;
+    if (btn) { btn.disabled = true; btn.innerText = '⏳ جاري فحص 25 عملة (500 شمعة)...'; }
+    container.innerHTML = '<div style="padding:14px; color:#00F0FF;">⏳ جاري سحب الشموع التاريخية من Bybit ومحاكاة الصفقات مع العمولات والتريلينج ستوب...</div>';
+
+    try {
+        const res = await fetch('/api/backtest?interval=240&limit=500');
+        const data = await res.json();
+        if (data.retCode === 0 && data.summary) {
+            const sm = data.summary;
+            const bySetup = data.bySetup || {};
+            const setupRows = Object.entries(bySetup).map(([k, v]) => `
+                <tr>
+                    <td style="padding:8px; font-weight:700; color:#fff;">${k}</td>
+                    <td class="mono" style="padding:8px;">${v.trades}</td>
+                    <td class="mono text-green" style="padding:8px; font-weight:700;">${v.winRatePct}%</td>
+                    <td class="mono" style="padding:8px;">${v.tp1HitRatePct}%</td>
+                    <td class="mono text-gold" style="padding:8px; font-weight:700;">${v.profitFactor}</td>
+                    <td class="mono ${v.sumNetPct >= 0 ? 'text-green' : 'text-red'}" style="padding:8px; font-weight:700;">${v.sumNetPct >= 0 ? '+' : ''}${v.sumNetPct}%</td>
+                </tr>
+            `).join('');
+
+            container.innerHTML = `
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap:10px; margin-bottom:14px;">
+                    <div class="hs-card" style="padding:10px;"><span class="hs-lbl">إجمالي الصفقات:</span><span class="hs-val mono">${sm.totalTrades}</span></div>
+                    <div class="hs-card" style="padding:10px;"><span class="hs-lbl">نسبة النجاح (Win Rate):</span><span class="hs-val mono text-green">${sm.winRatePct}% ✅</span></div>
+                    <div class="hs-card" style="padding:10px;"><span class="hs-lbl">وصول الهدف الأول TP1:</span><span class="hs-val mono text-cyan">${sm.tp1HitRatePct}%</span></div>
+                    <div class="hs-card" style="padding:10px;"><span class="hs-lbl">معامل الربح (Profit Factor):</span><span class="hs-val mono text-gold">${sm.profitFactor}</span></div>
+                    <div class="hs-card" style="padding:10px;"><span class="hs-lbl">نمو المحفظة التراكمي:</span><span class="hs-val mono text-green">+${sm.portfolioReturnPct}%</span></div>
+                    <div class="hs-card" style="padding:10px;"><span class="hs-lbl">أقصى تراجع (Max DD):</span><span class="hs-val mono text-red">${sm.maxDrawdownPct}%</span></div>
+                </div>
+                <div class="table-responsive">
+                    <table class="demo-table" style="width:100%; font-size:12.5px;">
+                        <thead>
+                            <tr>
+                                <th>النموذج الفني</th>
+                                <th>عدد الصفقات</th>
+                                <th>نسبة النجاح</th>
+                                <th>تحقق TP1</th>
+                                <th>معامل الربح (PF)</th>
+                                <th>صافي العائد التراكمي</th>
+                            </tr>
+                        </thead>
+                        <tbody>${setupRows}</tbody>
+                    </table>
+                </div>
+            `;
+        } else {
+            container.innerHTML = `<div class="text-red">⚠️ تعذر إكمال الاختبار: ${data.retMsg || 'خطأ غير معروف'}</div>`;
+        }
+    } catch (e) {
+        container.innerHTML = `<div class="text-red">❌ خطأ في الاتصال: ${e.message}</div>`;
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerText = '🚀 تشغيل الباك-تيست الآن'; }
+    }
+}
+

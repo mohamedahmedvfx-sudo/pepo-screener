@@ -64,14 +64,16 @@ EXCLUDED_SYMBOLS = {
 }
 
 # ==============================================================================
-# 📱 Telegram Alert System (إشعارات تيليجرام اللحظية على الموبايل)
+# 📱 Telegram Alert System & Capital Protection Engine
 # ==============================================================================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8745923005:AAEHhCxoDWXasD_qIogj8o4JoPmNbSARYuU")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1887796223")
+import bot_protection
+
+TELEGRAM_BOT_TOKEN = bot_protection.get_secret("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = bot_protection.get_secret("TELEGRAM_CHAT_ID")
 
 def send_telegram_alert(text: str, parse_mode: str = "HTML") -> bool:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", TELEGRAM_BOT_TOKEN)
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", TELEGRAM_CHAT_ID)
+    token = bot_protection.get_secret("TELEGRAM_BOT_TOKEN", TELEGRAM_BOT_TOKEN)
+    chat_id = bot_protection.get_secret("TELEGRAM_CHAT_ID", TELEGRAM_CHAT_ID)
     if not token or not chat_id:
         return False
     try:
@@ -91,6 +93,8 @@ def send_telegram_alert(text: str, parse_mode: str = "HTML") -> bool:
 
 def async_telegram_alert(text: str):
     threading.Thread(target=send_telegram_alert, args=(text,), daemon=True).start()
+
+bot_protection.set_alert_function(async_telegram_alert)
 
 # Cache
 CACHE_DATA = None
@@ -221,10 +225,12 @@ def get_market_regime():
                 "warning": "بيانات البيتكوين غير مكتملة، التداول بحذر."
             }
 
-        closes = np.array([float(k[4]) for k in btc_klines])
-        btc_price = closes[-1]
-        ema50 = calculate_ema(closes, 50)[-1]
-        rsi = calculate_rsi(closes, period=14)[-1]
+        all_closes = np.array([float(k[4]) for k in btc_klines])
+        btc_price = all_closes[-1]
+        # حساب المؤشرات على الشموع المغلقة فقط لمنع تغير قراءة السوق أثناء تكون الشمعة
+        closed_closes = all_closes[:-1] if len(all_closes) > 51 else all_closes
+        ema50 = calculate_ema(closed_closes, 50)[-1]
+        rsi = calculate_rsi(closed_closes, period=14)[-1]
 
         # 24h change from tickers
         btc_item = GLOBAL_SPOT_TICKERS_RAW.get("BTCUSDT")
@@ -271,23 +277,37 @@ def get_market_regime():
             "warning": str(e)
         }
 
-def analyze_coin(coin_meta, interval="240", market_regime=None):
+def analyze_coin(coin_meta, interval="240", market_regime=None, enable_mtf=True):
     symbol = coin_meta["symbol"]
-    klines = fetch_klines(symbol, interval=interval, limit=100)
-    if not klines or len(klines) < 40:
+    klines = fetch_klines(symbol, interval=interval, limit=105)
+    if not klines or len(klines) < 45:
         return None
 
     try:
-        closes = np.array([float(k[4]) for k in klines])
-        highs = np.array([float(k[2]) for k in klines])
-        lows = np.array([float(k[3]) for k in klines])
-        opens = np.array([float(k[1]) for k in klines])
-        volumes = np.array([float(k[5]) for k in klines])
+        # الشمعة الأخيرة في klines هي شمعة حية غير مغلقة بعد؛ نأخذ منها السعر اللحظي فقط
+        live_candle = klines[-1]
+        live_price = float(live_candle[4])
+        # جميع المؤشرات وإشارات الشموع تحسب على الشموع المغلقة المؤكدة فقط (Anti-Repainting)
+        closed_klines = klines[:-1]
+        closes = np.array([float(k[4]) for k in closed_klines])
+        highs = np.array([float(k[2]) for k in closed_klines])
+        lows = np.array([float(k[3]) for k in closed_klines])
+        opens = np.array([float(k[1]) for k in closed_klines])
+        volumes = np.array([float(k[5]) for k in closed_klines])
     except (ValueError, TypeError):
         return None
 
-    current_price = closes[-1]
-    if current_price <= 0:
+    signal_close = closes[-1]
+    current_price = live_price if live_price > 0 else signal_close
+    if current_price <= 0 or signal_close <= 0:
+        return None
+
+    # فلتر حماية من المطاردة أو الكسر اللحظي بعد إغلاق شمعة الإشارة:
+    # 1) إذا هبط السعر اللحظي أسفل قاع شمعة الإشارة المغلقة فالإشارة لاغية
+    # 2) إذا طار السعر اللحظي أكثر من 3.8% فوق إغلاق شمعة الإشارة فالدخول متأخر (منع الشراء في القمة)
+    if current_price < lows[-1] * 0.996:
+        return None
+    if (current_price - signal_close) / signal_close > 0.038:
         return None
 
     rsi = calculate_rsi(closes, period=14)
@@ -321,143 +341,163 @@ def analyze_coin(coin_meta, interval="240", market_regime=None):
     reasons = []
 
     # =========================================================================
-    # 🎯 1. PRIORITY SETUP: Golden Pullback (Trend-Following - Highest Win Rate)
-    # Price is strictly above EMA50, healthy pullback to EMA20/50, safe & reliable
+    # 🎯 1. SETUP: Oversold Institutional Bounce (أعلى نسبة نجاح تاريخية 60%+)
     # =========================================================================
-    if current_price > ema50[-1] and (abs(current_price - ema50[-1]) / current_price < 0.035 or abs(current_price - ema20[-1]) / current_price < 0.02) and 42 <= curr_rsi <= 62:
-        score = 82
+    if (
+        len(rsi) >= 4
+        and np.min(rsi[-4:-1]) < 29.5
+        and curr_rsi >= 31.0
+        and curr_rsi > prev_rsi + 1.5
+        and is_green
+        and (vol_ratio >= 1.35 or has_rejection_wick)
+        and hist[-1] > hist[-2]
+        and signal_close >= ema50[-1] * 0.82
+    ):
+        score = 84
+        setup_type = "OVERSOLD_BOUNCE"
+        setup_name = "💎 اقتناص ارتداد قاع مؤسسي (Oversold Dip)"
+        reasons.append(f"تشبع بيعي حاد مع ارتداد مؤكد في RSI ({curr_rsi:.1f}) وامتصاص مؤسسي")
+        if vol_ratio >= 1.5:
+            score += 6
+            reasons.append(f"سيولة شرائية ارتدادية قوية {vol_ratio:.1f}x")
+        if has_rejection_wick:
+            score += 5
+            reasons.append("ذيل شرائي سفلي طويل يرفض الهبوط")
+        if signal_close > closes[-2]:
+            score += 3
+            reasons.append("إغلاق شمعة خضراء أعلى من الإغلاق السابق")
+        recent_floor = float(np.min(lows[-7:]))
+        stop_loss = min(current_price * 0.955, recent_floor * 0.985)
+
+    # =========================================================================
+    # 🎯 2. PRIORITY SETUP: Golden Pullback (إعادة اختبار ترند صاعد)
+    # =========================================================================
+    elif (
+        signal_close > ema50[-1] >= ema200[-1] * 0.995
+        and 34 <= prev_rsi <= 46
+        and curr_rsi > prev_rsi + 2.0
+        and is_green
+        and signal_close > closes[-2]
+        and hist[-1] > hist[-2]
+        and (lows[-1] <= ema50[-1] * 1.018 or has_rejection_wick)
+    ):
+        score = 84
         setup_type = "TREND_PULLBACK"
         setup_name = "📈 إعادة اختبار ترند صاعد (Golden Pullback)"
-        reasons.append("ارتكاز مثالي أعلى متوسط الدعم المتحرك EMA 20/50")
-        
-        if current_price > ema200[-1]:
+        reasons.append("ارتداد صحي من دعم المتوسط المتحرك EMA 50 داخل مسار صاعد")
+        if signal_close > ema200[-1] and ema50[-1] > ema200[-1]:
             score += 6
-            reasons.append("الترند العام صاعد بثبات تام أعلى EMA 200")
-        if curr_rsi > prev_rsi:
+            reasons.append("الترند العام صاعد بثبات أعلى EMA 50 و EMA 200")
+        if has_rejection_wick or vol_ratio >= 1.2:
             score += 5
-            reasons.append(f"انعطاف مؤشر RSI للأعلى من منطقة الأمان ({curr_rsi:.1f})")
-        if is_green or has_rejection_wick:
-            score += 5
-            reasons.append("شمعة ارتداد إيجابية ترفض كسر خط الدعم")
-        if hist[-1] > hist[-2]:
-            score += 4
-            reasons.append("زخم الماكد MACD يتقلص لصالح المشترين")
-            
-        swing_support = min(ema50[-1] * 0.985, np.min(lows[-12:]) * 0.99)
-        stop_loss = min(current_price * 0.962, swing_support)
+            reasons.append("شمعة ارتداد إيجابية مع سيولة داعمة")
+        swing_support = float(np.min(lows[-11:])) * 0.988
+        stop_loss = min(current_price * 0.955, swing_support)
 
     # =========================================================================
-    # 🎯 2. PRIORITY SETUP: Volume Breakout (Momentum & Resistance Cleared)
-    # Institutional volume surge + breaking resistance
+    # 🎯 3. SETUP: Bullish Divergence (انفراج إيجابي مزدوج مع قاع سعري)
     # =========================================================================
-    elif vol_ratio >= 1.75 and 52 <= curr_rsi <= 74 and is_green:
-        score = 80
-        setup_type = "VOLUME_BREAKOUT"
-        setup_name = "🚀 اختراق وزخم سيولة (Volume Breakout)"
-        reasons.append(f"انفجار سيولة شرائية بمقدار {vol_ratio:.1f}x أضعاف المتوسط")
-
-        if current_price >= prev_high_30 * 0.985:
-            score += 8
-            reasons.append("اختراق قمة المقاومة لآخر 30 شمعة")
-        if macd_line[-1] > signal_line[-1] and hist[-1] > hist[-2]:
-            score += 6
-            reasons.append("تقاطع إيجابي صاعد ومؤكد في مؤشر MACD")
-        if current_price > ema20[-1] > ema50[-1]:
-            score += 4
-            reasons.append("ترتيب متصاعد وصحي للمتوسطات المتحركة EMA 20/50")
-
-        stop_loss = max(current_price * 0.952, opens[-1] * 0.982)
-
-    # =========================================================================
-    # 🎯 3. SETUP: Bullish Divergence (Strict Pivot Reversal)
-    # Detects true swing low divergence between price and RSI
-    # =========================================================================
-    elif True:
-        sub_lows = lows[-24:-3]
-        sub_rsi = rsi[-24:-3]
+    elif len(lows) >= 25:
+        sub_lows = lows[-21:-3]
+        sub_rsi = rsi[-21:-3]
+        sub_hist = hist[-21:-3]
         if len(sub_lows) > 0:
             min_idx = int(np.argmin(sub_lows))
-            prev_swing_low = sub_lows[min_idx]
-            prev_swing_rsi = sub_rsi[min_idx]
-            curr_low = np.min(lows[-3:])
+            prev_swing_low = float(sub_lows[min_idx])
+            prev_swing_rsi = float(sub_rsi[min_idx])
+            prev_swing_hist = float(sub_hist[min_idx])
+            curr_low = float(np.min(lows[-3:]))
 
-            has_div = (curr_low <= prev_swing_low * 1.01) and (curr_rsi >= prev_swing_rsi + 3.5) and (curr_rsi < 48)
-            confirmed_reversal = (is_green or has_rejection_wick) and (hist[-1] > hist[-2])
-
+            has_div = (
+                prev_swing_low * 0.992 <= curr_low <= prev_swing_low * 1.012
+                and prev_swing_rsi <= 36.0
+                and curr_rsi >= prev_swing_rsi + 3.5
+                and curr_rsi > prev_rsi + 2.0
+                and hist[-1] > prev_swing_hist
+                and hist[-1] > hist[-2]
+            )
+            confirmed_reversal = (
+                is_green
+                and signal_close > max(closes[-2], opens[-2])
+                and (has_rejection_wick or vol_ratio >= 1.25)
+                and signal_close >= ema50[-1] * 0.90
+            )
             if has_div and confirmed_reversal:
-                score = 78
+                score = 83
                 setup_type = "BULLISH_DIVERGENCE"
                 setup_name = "🔄 انفراج إيجابي للزخم (Bullish Divergence)"
-                reasons.append(f"انفراج إيجابي مؤكد: قاع سعر ({curr_low:.4f}) يقابله قاع أعلى في RSI ({curr_rsi:.1f})")
-                
-                if vol_ratio >= 1.25:
-                    score += 6
-                    reasons.append(f"تأكيد دخول سيولة ارتدادية بنسبة {vol_ratio:.1f}x")
+                reasons.append(f"قاع مزدوج مع انفراج إيجابي مؤكد في RSI ({curr_rsi:.1f}) و MACD")
+                if vol_ratio >= 1.35:
+                    score += 5
+                    reasons.append(f"تأكيد دخول سيولة شرائية بنسبة {vol_ratio:.1f}x")
                 if has_rejection_wick:
                     score += 5
-                    reasons.append("ذيل سفلي شرائي طويل يؤكد رفض القاع")
-                if is_green:
-                    score += 3
-                    reasons.append("إغلاق شمعة خضراء تؤكد الانعكاس")
-
-                if is_market_bearish:
-                    score -= 16
-                    reasons.append("⚠️ حذر: البيتكوين هابط — خصم من ثقة الانفراج لمنع الفخاخ البيعية")
-
-                stop_loss = min(current_price * 0.955, curr_low * 0.988)
+                    reasons.append("ذيل سفلي شرائي يؤكد رفض كسر القاع")
+                stop_loss = min(current_price * 0.955, curr_low * 0.985)
 
     # =========================================================================
-    # 🎯 4. SETUP: Oversold Bounce (Institutional Dip Absorption)
-    # Extremely strict to avoid catching falling knives!
+    # 🎯 4. SETUP: Volume Climax Reversal / Breakout (انفجار سيولة شرائية من دعم)
     # =========================================================================
     if score == 0:
-        is_deep_oversold = curr_rsi <= 33 or (prev_rsi <= 30 and curr_rsi > prev_rsi)
-        has_absorption = vol_ratio >= 1.3 or has_rejection_wick
-        not_in_freefall = current_price >= ema50[-1] * 0.82
-
-        if is_deep_oversold and has_absorption and not_in_freefall:
-            score = 75
-            setup_type = "OVERSOLD_BOUNCE"
-            setup_name = "💎 اقتناص ارتداد قاع (Oversold Dip)"
-            reasons.append(f"تشبع بيعي حاد في RSI ({curr_rsi:.1f}) مع بوادر امتصاص مؤسسي")
-
-            if vol_ratio >= 1.4:
-                score += 7
-                reasons.append(f"امتصاص بيعي قوي بارتفاع حجم السيولة {vol_ratio:.1f}x")
-            if has_rejection_wick:
+        if (
+            vol_ratio >= 1.50
+            and 30 <= prev_rsi <= 39
+            and curr_rsi > prev_rsi + 2.5
+            and is_green
+            and signal_close > closes[-2]
+            and hist[-1] > hist[-2]
+            and signal_close >= ema50[-1] * 0.86
+        ):
+            score = 82
+            setup_type = "VOLUME_BREAKOUT"
+            setup_name = "🚀 اختراق وزخم سيولة شرائية (Volume Breakout)"
+            reasons.append(f"تدفق سيولة مؤسسية بمقدار {vol_ratio:.1f}x مع انعطاف سعري صاعد")
+            if vol_ratio >= 2.0:
                 score += 6
-                reasons.append("رفض هبوطي قوي بذيل شرائي سفلي ممتد")
-            if is_green:
+                reasons.append("انفجار فوليوم قياسي يتجاوز ضعفي المتوسط")
+            if signal_close > opens[-2]:
                 score += 4
-                reasons.append("شمعة ارتدادية خضراء تؤكد إيقاف النزيف")
-            if hist[-1] > hist[-2]:
-                score += 3
-                reasons.append("انحسار قوة البائعين على مؤشر الماكد")
+                reasons.append("ابتلاع شرائي كامل للشمعة الهابطة السابقة")
+            recent_floor = float(np.min(lows[-7:]))
+            stop_loss = min(current_price * 0.955, recent_floor * 0.985)
 
-            if is_market_bearish:
-                score -= 18
-                reasons.append("⚠️ حذر: السوق العام هابط — تم تخفيض تقييم الارتداد لمنع فخ السكين الهابطة")
-
-            recent_floor = np.min(lows[-14:])
-            stop_loss = min(current_price * 0.955, recent_floor * 0.988)
+    # =========================================================================
+    # ⏱️ 5. Multi-Timeframe (MTF 1H) Confirmation Filter (تأكيد فريم الساعة)
+    # =========================================================================
+    if score >= 76 and enable_mtf and interval != "60":
+        try:
+            klines_1h = fetch_klines(symbol, interval="60", limit=55)
+            if klines_1h and len(klines_1h) >= 35:
+                closes_1h = np.array([float(k[4]) for k in klines_1h[:-1]])
+                ema20_1h = calculate_ema(closes_1h, 20)[-1]
+                ema50_1h = calculate_ema(closes_1h, min(len(closes_1h), 50))[-1]
+                rsi_1h = calculate_rsi(closes_1h, period=14)[-1]
+                if closes_1h[-1] >= ema20_1h and ema20_1h >= ema50_1h * 0.995 and 46 <= rsi_1h <= 72:
+                    score += 5
+                    reasons.append(f"تأكيد إيجابي متوافق على فريم الساعة 1H (RSI: {rsi_1h:.1f})")
+                elif closes_1h[-1] < ema50_1h * 0.975 and rsi_1h < 38 and setup_type in ("TREND_PULLBACK", "VOLUME_BREAKOUT"):
+                    score -= 8
+                    reasons.append("⚠️ ضعف لحظي على فريم الساعة 1H — تم خفض التقييم للحماية")
+        except Exception:
+            pass
 
     # 🚫 Strict Qualification Filter: Threshold raised to 78!
     if score < 78:
         return None
 
-    # Dynamic Clamp on Stop Loss:
+    # Dynamic Clamp on Stop Loss (4.5% to 7.5% on 4H Spot):
     sl_dist = current_price - stop_loss
     sl_pct = (sl_dist / current_price) * 100
 
-    if sl_pct < 3.8:
-        stop_loss = current_price * 0.962
+    if sl_pct < 4.5:
+        stop_loss = current_price * 0.955
         sl_dist = current_price - stop_loss
-    elif sl_pct > 6.8:
+    elif sl_pct > 7.5:
         return None
 
-    tp1 = current_price + (sl_dist * 1.15)
-    tp2 = current_price + (sl_dist * 2.25)
-    tp3 = current_price + (sl_dist * 3.60)
+    tp1 = current_price + (sl_dist * 0.90)
+    tp2 = current_price + (sl_dist * 2.15)
+    tp3 = current_price + (sl_dist * 3.40)
 
     rr_ratio = round((tp2 - current_price) / sl_dist, 2)
     if rr_ratio < 1.85:
@@ -632,10 +672,10 @@ def load_bybit_config():
             except Exception:
                 pass
 
-    # 3. Built-in Cloud Production Fallback (Unified Trading Account)
+    # 3. Built-in Cloud Production Fallback (Disabled)
     return {
-        "apiKey": "10TSpdK1sHGhhPXkKs",
-        "apiSecret": "OXpQhZQPGY19EBl3s9QFISiKbPZZio5UVe6m"
+        "apiKey": "",
+        "apiSecret": ""
     }
 
 def save_bybit_config(api_key, api_secret):
@@ -694,6 +734,7 @@ def get_demo_account_summary():
     
     if open_pos:
         tickers = get_all_spot_tickers_cached(ttl=2.0)
+        prot_settings = bot_protection.load_settings()
         still_open = []
         for pos in open_pos:
             sym = pos.get("symbol")
@@ -708,6 +749,15 @@ def get_demo_account_summary():
                 entry_price = float(pos.get("entryPrice", live_price))
                 if entry_price > 0:
                     pos["unrealizedPnLPct"] = round(((live_price - entry_price) / entry_price) * 100, 2)
+
+                # تحديث الوقف المتحرك وتأمين الدخول (Breakeven + Fees / Lock TP1 / Trailing Stop)
+                upd = bot_protection.compute_protective_stop(pos, live_price, prot_settings)
+                pos["highestPrice"] = upd["highest"]
+                pos["originalSl"] = upd["originalSl"]
+                if upd["changed"]:
+                    pos["sl"] = upd["sl"]
+                    pos["protectionStage"] = upd["stage"]
+                    changed = True
                 
                 # Multi-Target Take Profit & Stop Loss Logic
                 tp1 = float(pos.get("tp1", 0) or 0)
@@ -720,6 +770,12 @@ def get_demo_account_summary():
                     realized_pnl = round(pos["currentValue"] - float(pos.get("amountUsdt", 0)), 2)
                     net_return = round(pos["currentValue"], 2)
                     acc["balanceUsdt"] = round(acc.get("balanceUsdt", 0) + net_return, 2)
+                    stage_now = pos.get("protectionStage", "INITIAL")
+                    exit_lbl = (
+                        f"تأمين ربح تلقائي ({stage_now} @ ${sl_target:,.4f}) 🛡️✅"
+                        if realized_pnl >= 0
+                        else f"تفعيل وقف الخسارة الإلزامي (${sl_target}) 🛡️"
+                    )
                     hist_entry = {
                         "id": pos.get("id"),
                         "symbol": sym,
@@ -732,7 +788,7 @@ def get_demo_account_summary():
                         "realizedPnL": realized_pnl,
                         "pnlPct": pos["unrealizedPnLPct"],
                         "exitFee": round(fee, 4),
-                        "exitReason": f"تفعيل وقف الخسارة الإلزامي (${sl_target}) 🛡️",
+                        "exitReason": exit_lbl,
                         "setupName": pos.get("setupName", "صفقة محاكاة"),
                         "closedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
@@ -833,8 +889,12 @@ def get_demo_account_summary():
                         pos["unrealizedPnL"] = round(pos["currentValue"] - pos["amountUsdt"], 2)
                         pos["tp1Executed"] = True
                         pos["tp1LockedPnL"] = half_pnl
-                        # Move SL to Entry Price for Breakeven!
-                        pos["sl"] = entry_price
+                        # Move SL to Breakeven + Fee Buffer (+0.25%)!
+                        be_price = bot_protection.breakeven_price(entry_price, prot_settings)
+                        if not pos.get("originalSl"):
+                            pos["originalSl"] = float(pos.get("sl") or 0)
+                        pos["sl"] = max(float(pos.get("sl") or 0), be_price)
+                        pos["protectionStage"] = "BREAKEVEN"
                         changed = True
 
                 changed = True
@@ -863,6 +923,7 @@ def get_demo_account_summary():
         "totalEquity": total_equity,
         "openPositions": open_pos,
         "history": history,
+        "analytics": bot_protection.compute_journal_analytics(history),
         "stats": {
             "totalTrades": total_trades,
             "winningTrades": winning_trades,
@@ -890,7 +951,7 @@ REAL_POS_LOCK = threading.RLock()
 _REAL_POS_CACHE = None
 
 def heal_and_recalc_history(acc):
-    """Auto-heals and recalculates historical trades that are missing realizedPnL or exitReason."""
+    """Auto-heals and recalculates historical trades that are missing realizedPnL, have corrupted amountUsdt/qty mismatches, or wrong exitReason."""
     if not isinstance(acc, dict):
         return False
     changed = False
@@ -898,26 +959,40 @@ def heal_and_recalc_history(acc):
         entry_p = float(h.get("entryPrice", 0) or 0)
         close_p = float(h.get("closePrice", 0) or 0)
         qty = float(h.get("qty", 0) or 0)
-        cost = float(h.get("amountUsdt", 0) or (entry_p * qty))
-        
+        raw_cost = float(h.get("amountUsdt", 0) or 0)
+        true_cost = round(entry_p * qty, 2) if (entry_p > 0 and qty > 0) else raw_cost
+
+        # إصلاح أي تعارض حسابي في الصفقات القديمة حيث كانت amountUsdt أكبر بكثير من (qty * entryPrice)
+        cost_mismatch = (true_cost > 0 and abs(raw_cost - true_cost) / true_cost > 0.08)
         r_pnl = h.get("realizedPnL")
-        needs_pnl_calc = (r_pnl is None or (float(r_pnl) == 0.0 and entry_p > 0 and close_p > 0 and abs(entry_p - close_p) / entry_p > 0.005))
-        
+        needs_pnl_calc = (
+            cost_mismatch
+            or r_pnl is None
+            or (float(r_pnl) == 0.0 and entry_p > 0 and close_p > 0 and abs(entry_p - close_p) / entry_p > 0.005)
+        )
+
         if needs_pnl_calc and entry_p > 0 and close_p > 0 and qty > 0:
             net_ret = round(close_p * qty, 2)
-            pnl = round(net_ret - cost, 2)
+            pnl = round(net_ret - true_cost, 2)
             pct = round(((close_p - entry_p) / entry_p) * 100, 2)
+            h["amountUsdt"] = true_cost
             h["netReturn"] = net_ret
             h["realizedPnL"] = pnl
             h["pnlPct"] = pct
             changed = True
-            
-        if not h.get("exitReason"):
+
+        # تصحيح سبب الخروج لو كان مكتوباً "تحقيق الهدف الأول" بينما الصفقة أُغلقت بخسارة
+        curr_pnl = float(h.get("realizedPnL", 0) or 0)
+        exit_r = str(h.get("exitReason") or "")
+        if curr_pnl < -0.05 and ("تحقيق الهدف" in exit_r or not exit_r):
+            h["exitReason"] = f"إغلاق / وقف خسارة (${close_p:,.4f}) 🛑"
+            changed = True
+        elif not exit_r:
             if h.get("closeReason") == "STOP_LOSS_HIT":
                 h["exitReason"] = f"تفعيل وقف الخسارة (${close_p:,.4f}) 🛑"
-            elif h.get("realizedPnL") and float(h.get("realizedPnL")) < -0.005:
+            elif curr_pnl < -0.005:
                 h["exitReason"] = f"إغلاق بخسارة (${close_p:,.4f}) 🛑"
-            elif h.get("realizedPnL") and float(h.get("realizedPnL")) > 0.005:
+            elif curr_pnl > 0.005:
                 h["exitReason"] = f"تحقيق ربح (${close_p:,.4f}) 🎯"
             else:
                 h["exitReason"] = f"إغلاق الصفقة (${close_p:,.4f})"
@@ -1224,8 +1299,15 @@ def sync_real_positions_with_bybit():
                     pnl_pct = round(((exec_price - entry_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
 
                     tp2_target = float(matched_pos.get("tp2", 0) or 0)
-                    is_tp2 = tp2_target > 0 and abs(exec_price - tp2_target) / tp2_target < 0.02
-                    exit_reason = f"تحقيق الهدف الثاني (TP2: ${exec_price}) وتسييل الصفقة 🎯🚀" if is_tp2 else f"تحقيق الهدف الأول (TP1: ${exec_price}) | بيع 50% وتأمين الدخول 🎯"
+                    tp1_target = float(matched_pos.get("tp1", 0) or 0)
+                    is_tp2 = tp2_target > 0 and exec_price >= tp2_target * 0.985
+                    is_tp1 = (not is_tp2) and (tp1_target > 0 and exec_price >= tp1_target * 0.985)
+                    if is_tp2:
+                        exit_reason = f"تحقيق الهدف الثاني (TP2: ${exec_price}) وتسييل الصفقة 🎯🚀"
+                    elif is_tp1 or pnl > 0:
+                        exit_reason = f"تحقيق الهدف الأول (TP1: ${exec_price}) | بيع 50% وتأمين الدخول 🎯"
+                    else:
+                        exit_reason = f"بيع / وقف خسارة (${exec_price}) 🛑"
 
                     hist_entry = {
                         "id": f"{matched_pos.get('id')}-{order_id or int(now)}",
@@ -1259,18 +1341,22 @@ def sync_real_positions_with_bybit():
                             f"✨ <i>ألف مبروك! اكتملت أهداف الصفقة 100% بنجاح.</i>"
                         )
                     else:
+                        be_price = bot_protection.breakeven_price(entry_price)
                         matched_pos["qty"] = round(remaining_qty, 4)
                         matched_pos["amountUsdt"] = round(max(0.0, float(matched_pos.get("amountUsdt", 0)) - cost), 2)
                         matched_pos["tp1Executed"] = True
                         matched_pos["tp1LockedPnL"] = pnl
-                        matched_pos["sl"] = entry_price
+                        if not matched_pos.get("originalSl"):
+                            matched_pos["originalSl"] = float(matched_pos.get("sl") or 0)
+                        matched_pos["sl"] = max(float(matched_pos.get("sl") or 0), be_price)
+                        matched_pos["protectionStage"] = "BREAKEVEN"
                         matched_pos["setupName"] = f"صفقة حقيقية Bybit (تحقق الهدف الأول 🎯)"
                         async_telegram_alert(
                             f"🎯 <b>تحقيق الهدف الأول (TP1) بنجاح!</b>\n\n"
                             f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
                             f"💵 <b>سعر البيع (50%):</b> <code>${exec_price:,.4f}</code>\n"
                             f"💰 <b>الربح المحقق الآن:</b> <b>+{pnl:,.2f} USDT (+{pnl_pct}%)</b>\n"
-                            f"🛡️ <b>تأمين الصفقة:</b> تم رفع وقف الخسارة لسعر الدخول (<code>${entry_price:,.4f}</code>)\n"
+                            f"🛡️ <b>تأمين الصفقة:</b> تم رفع وقف الخسارة لسعر الدخول + عمولة المنصة (<code>${matched_pos['sl']:,.4f}</code>)\n"
                             f"🚀 متبقي 50% مستمرة نحو الهدف الثاني (TP2: ${tp2_target:,.4f})!"
                         )
                     changed = True
@@ -1318,6 +1404,8 @@ def get_real_positions_summary():
     losing_trades = sum(1 for h in history if float(h.get("realizedPnL", 0)) < -0.005)
     win_rate = round((winning_trades / total_trades * 100), 1) if total_trades > 0 else 0.0
     total_realized_pnl = round(sum(float(h.get("realizedPnL", 0)) for h in history), 2)
+    today_pnl = bot_protection.realized_pnl_today(history)
+    prot_status = bot_protection.get_status()
     
     return {
         "retCode": 0,
@@ -1326,12 +1414,15 @@ def get_real_positions_summary():
         "totalInvested": total_invested,
         "totalValue": total_pos_value,
         "totalUnrealizedPnL": total_unrealized_pnl,
+        "protection": prot_status,
+        "analytics": bot_protection.compute_journal_analytics(history),
         "stats": {
             "totalTrades": total_trades,
             "winningTrades": winning_trades,
             "losingTrades": losing_trades,
             "winRate": win_rate,
-            "totalRealizedPnL": total_realized_pnl
+            "totalRealizedPnL": total_realized_pnl,
+            "todayRealizedPnL": today_pnl
         }
     }
 
@@ -1554,6 +1645,28 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
             self._send_json(summary)
             return
 
+        elif path == "/api/protection/status":
+            real_acc = load_real_positions()
+            hist = real_acc.get("history", [])
+            status = bot_protection.get_status()
+            status["todayRealizedPnL"] = bot_protection.realized_pnl_today(hist)
+            self._send_json({"retCode": 0, **status})
+            return
+
+        elif path == "/api/backtest":
+            try:
+                import backtest_engine
+                qs = urllib.parse.parse_qs(parsed.query)
+                interval = qs.get("interval", ["240"])[0]
+                limit = int(qs.get("limit", ["500"])[0])
+                syms_param = qs.get("symbols", [None])[0]
+                symbols_list = [s.strip().upper() for s in syms_param.split(",") if s.strip()] if syms_param else None
+                report = backtest_engine.run_portfolio_backtest(symbols=symbols_list, interval=interval, limit=limit)
+                self._send_json(report)
+            except Exception as bt_err:
+                self._send_json({"retCode": -1, "retMsg": f"خطأ أثناء تشغيل الاختبار التاريخي: {bt_err}"})
+            return
+
         elif path == "/api/kline":
             qs = urllib.parse.parse_qs(parsed.query)
             sym = qs.get("symbol", ["BTCUSDT"])[0].upper()
@@ -1591,12 +1704,69 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
             self._send_json({"success": True, "message": "تم حفظ المفاتيح بنجاح وتفعيل حساب Bybit V5!"})
             return
 
+        elif path == "/api/protection/settings":
+            updated = bot_protection.save_settings(req_json)
+            self._send_json({"retCode": 0, "success": True, "settings": updated})
+            return
+
+        elif path == "/api/protection/unlock-daily":
+            bot_protection.reset_daily_lock()
+            self._send_json({"retCode": 0, "success": True, "message": "تم رفع قفل الخسارة اليومية يدوياً."})
+            return
+
+        elif path == "/api/autotrader/run-now":
+            try:
+                res_auto = execute_auto_trade_cycle(force_run=True)
+                self._send_json({"retCode": 0, "success": True, **res_auto})
+            except Exception as ex_auto:
+                self._send_json({"retCode": -1, "success": False, "error": str(ex_auto)})
+            return
+
         elif path == "/api/order/place":
             symbol = req_json.get("symbol", "").upper()
             side = req_json.get("side", "Buy").capitalize()
             order_type = req_json.get("orderType", "Market").capitalize()
             qty = str(req_json.get("qty", ""))
             price = str(req_json.get("price", "")) if req_json.get("price") else None
+
+            # فحص قاطع الدائرة للخسارة اليومية قبل أي أمر شراء جديد
+            if side == "Buy":
+                try:
+                    real_acc_chk = load_real_positions()
+                    hist_chk = real_acc_chk.get("history", [])
+                    open_chk = real_acc_chk.get("openPositions", [])
+                    prot_cfg = bot_protection.load_settings()
+
+                    # التحقق من الحد الأقصى للصفقات المفتوحة
+                    max_open = int(prot_cfg.get("maxOpenPositions", 4) or 4)
+                    if len(open_chk) >= max_open and not req_json.get("forceOverride"):
+                        self._send_json({
+                            "retCode": -1002,
+                            "retMsg": f"🛡️ حماية المحفظة: لديك حالياً {len(open_chk)} صفقات مفتوحة (الحد الأقصى الآمن: {max_open} صفقات)."
+                        })
+                        return
+
+                    def _estimate_equity():
+                        invested = sum(float(p.get("amountUsdt", 0) or 0) for p in open_chk)
+                        try:
+                            wb_eq = bybit_signed_request("GET", "/v5/account/wallet-balance", params={"accountType": "UNIFIED"})
+                            if wb_eq.get("retCode") == 0:
+                                tot = float(wb_eq.get("result", {}).get("list", [{}])[0].get("totalEquity", 0) or 0)
+                                if tot > 0:
+                                    return tot
+                        except Exception:
+                            pass
+                        return max(invested, 100.0)
+
+                    dl_info = bot_protection.check_daily_loss(hist_chk, equity_fn=_estimate_equity)
+                    if dl_info.get("locked") and not req_json.get("forceOverride"):
+                        self._send_json({
+                            "retCode": -1001,
+                            "retMsg": f"🛑 قاطع الخسارة اليومية مفعّل: {dl_info.get('reason')} — تم إيقاف فتح صفقات شراء جديدة اليوم لحماية رأس المال."
+                        })
+                        return
+                except Exception as guard_chk_err:
+                    print(f"⚠️ [Daily Loss Check Error] {guard_chk_err}")
             
             # Fetch symbol precision filters from Bybit
             info = get_instrument_info(symbol)
@@ -1775,6 +1945,10 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                     if not entry_p or entry_p <= 0:
                         entry_p = float(req_json.get("price") or 0)
 
+                    prot_settings = bot_protection.load_settings()
+                    default_sl_pct = float(prot_settings.get("defaultStopLossPct", 4.2) or 4.2) / 100.0
+                    effective_sl = float(sl) if (sl and float(sl) > 0) else (round(entry_p * (1.0 - default_sl_pct), 6) if entry_p > 0 else None)
+
                     new_real_pos = {
                         "id": f"REAL-{int(time.time())}-{symbol[:4]}",
                         "symbol": symbol,
@@ -1783,6 +1957,7 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                         "orderType": order_type,
                         "entryPrice": entry_p,
                         "currentPrice": entry_p,
+                        "highestPrice": entry_p,
                         "qty": exec_qty,
                         "amountUsdt": float(qty) if (order_type == "Market" and req_json.get("marketUnit") == "quoteCoin") else round(exec_qty * entry_p, 2),
                         "feePaid": round(exec_qty * entry_p * 0.001, 3),
@@ -1792,7 +1967,9 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                         "tp1": float(req_json.get("tp1", 0)) if req_json.get("tp1") else (float(tp) if tp else None),
                         "tp2": float(req_json.get("tp2", 0)) if req_json.get("tp2") else (float(tp) if tp else None),
                         "tp3": float(req_json.get("tp3", 0)) if req_json.get("tp3") else None,
-                        "sl": float(sl) if sl else None,
+                        "sl": effective_sl,
+                        "originalSl": effective_sl,
+                        "protectionStage": "INITIAL",
                         "setupName": req_json.get("setupName", "صفقة حقيقية Bybit"),
                         "openedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "status": "OPEN",
@@ -1969,6 +2146,7 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                 "orderType": order_type,
                 "entryPrice": price,
                 "currentPrice": price,
+                "highestPrice": price,
                 "qty": coins_qty,
                 "amountUsdt": amount_usdt,
                 "feePaid": fee,
@@ -1979,6 +2157,8 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                 "tp2": tp2,
                 "tp3": tp3,
                 "sl": sl,
+                "originalSl": sl,
+                "protectionStage": "INITIAL",
                 "tpStrategy": tp_strategy,
                 "setupName": setup_name,
                 "score": score,
@@ -2141,20 +2321,63 @@ def background_stop_loss_guard():
     while True:
         try:
             time.sleep(2.0)
+            bot_protection.mark_guard_ok()
+
             # 1. Automatically sync filled TP limit orders directly from Bybit's live trades
             sync_real_positions_with_bybit()
 
             acc = load_real_positions()
             open_pos = acc.get("openPositions", [])
+            hist = acc.get("history", [])
+
+            # Check daily loss circuit breaker automatically
+            try:
+                bot_protection.check_daily_loss(hist)
+            except Exception:
+                pass
+
             if not open_pos:
                 continue
             tickers = get_all_spot_tickers_cached(ttl=2.0)
+            prot_settings = bot_protection.load_settings()
             changed = False
             for pos in list(open_pos):
                 sym = pos.get("symbol")
-                sl = float(pos.get("sl") or 0)
                 live_price = tickers.get(sym)
-                if live_price and live_price > 0 and sl > 0 and live_price <= sl:
+                if not live_price or live_price <= 0:
+                    continue
+
+                # 1. Update dynamic protective stop (Breakeven + Fees / Lock TP1 / Trailing Stop)
+                upd = bot_protection.compute_protective_stop(pos, live_price, prot_settings)
+                prev_stage = pos.get("protectionStage", "INITIAL")
+                prev_high = float(pos.get("highestPrice") or 0)
+                if upd["highest"] > prev_high * 1.002:
+                    pos["highestPrice"] = upd["highest"]
+                    pos["originalSl"] = upd["originalSl"]
+                    changed = True
+
+                if upd["changed"]:
+                    old_sl = float(pos.get("sl") or 0)
+                    pos["sl"] = upd["sl"]
+                    pos["originalSl"] = upd["originalSl"]
+                    pos["highestPrice"] = upd["highest"]
+                    pos["protectionStage"] = upd["stage"]
+                    changed = True
+
+                    # إرسال إشعار تيليجرام عند ترقية مرحلة الحماية (أو تحرك التريلينج ستوب بنسبة مؤثرة >= 0.6%)
+                    stage_changed = (upd["stage"] != prev_stage)
+                    sl_jump_pct = ((upd["sl"] - old_sl) / old_sl * 100.0) if old_sl > 0 else 100.0
+                    if stage_changed or sl_jump_pct >= 0.6:
+                        async_telegram_alert(
+                            f"🛡️ <b>ترقية حماية الصفقة تلقائياً ({upd['stage']})!</b>\n\n"
+                            f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                            f"📈 <b>السعر الحالي:</b> <code>${live_price:,.4f}</code> (أعلى قمة: <code>${upd['highest']:,.4f}</code>)\n"
+                            f"🔒 <b>وقف الخسارة الجديد:</b> <code>${upd['sl']:,.4f}</code> (كان: <code>${old_sl:,.4f}</code>)\n"
+                            f"✨ <b>السبب:</b> {upd['reason']}"
+                        )
+
+                sl = float(pos.get("sl") or 0)
+                if sl > 0 and live_price <= sl:
                     print(f"\n🚨 [SL GUARD TRIGGERED] {sym}: live ${live_price} <= SL ${sl}!")
                     # 1. Cancel open TP limit orders on Bybit for this symbol
                     tp_ids = str(pos.get("tpOrderId") or "").split(",")
@@ -2185,40 +2408,319 @@ def background_stop_loss_guard():
                             })
                             print(f"🚨 [SL Guard] Market Sell for {sym} result: {m_res}")
                     except Exception as sl_err:
-                        print(f"⚠️ [SL Guard] Error selling {sym}: {sl_err}")
+                        bot_protection.report_error(f"sl_sell_{sym}", f"فشل تنفيذ أمر بيع وقف الخسارة للعملة {sym}", sl_err)
 
-                    # 3. Compute Realized Loss and move position to history
+                    # 3. Compute Realized PnL and move position to history
                     entry_p = float(pos.get("entryPrice", live_price) or live_price)
                     p_qty = float(pos.get("qty", 0) or 0)
-                    p_cost = float(pos.get("amountUsdt", 0) or (p_qty * entry_p))
+                    p_cost = round(p_qty * entry_p, 2) if (p_qty > 0 and entry_p > 0) else float(pos.get("amountUsdt", 0) or 0)
                     net_ret = round(p_qty * live_price, 2)
                     pnl = round(net_ret - p_cost, 2)
                     pnl_pct = round(((live_price - entry_p) / entry_p) * 100, 2) if entry_p > 0 else 0.0
+                    stage_now = pos.get("protectionStage", "INITIAL")
 
                     open_pos.remove(pos)
+                    pos["amountUsdt"] = p_cost
                     pos["status"] = "CLOSED"
-                    pos["closeReason"] = "STOP_LOSS_HIT"
+                    pos["closeReason"] = "TRAILING_PROFIT_HIT" if pnl >= 0 else "STOP_LOSS_HIT"
                     pos["closePrice"] = live_price
                     pos["netReturn"] = net_ret
                     pos["realizedPnL"] = pnl
                     pos["pnlPct"] = pnl_pct
-                    pos["exitReason"] = f"تفعيل وقف الخسارة الإلزامي (${sl:,.4f}) 🛑"
+                    if pnl >= 0:
+                        pos["exitReason"] = f"تأمين أرباح تلقائي ({stage_now} @ ${sl:,.4f}) 🛡️✅"
+                    else:
+                        pos["exitReason"] = f"تفعيل وقف الخسارة الإلزامي (${sl:,.4f}) 🛑"
                     pos["closedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     acc.setdefault("history", []).insert(0, pos)
                     changed = True
-                    # إشعار تيليجرام لتفعيل وقف الخسارة
-                    async_telegram_alert(
-                        f"🛑 <b>تنبيه تفعيل وقف الخسارة (Stop-Loss Guard)!</b>\n\n"
-                        f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
-                        f"📉 <b>سعر الخروج:</b> <code>${live_price:,.4f}</code> (حد الأمان: ${sl:,.4f})\n"
-                        f"💸 <b>الخسارة المحققة:</b> <b>{pnl:,.2f} USDT ({pnl_pct:+.2f}%)</b>\n"
-                        f"💵 <b>المبلغ المسترد للكاش:</b> ${net_ret:,.2f} USDT\n"
-                        f"⚡ <i>تم تسييل الصفقة بالكامل بالسوق لحماية المحفظة ومنع تعميق الخسارة.</i>"
-                    )
+
+                    # فحص قاطع الدائرة اليومي فوراً بعد إغلاق الصفقة
+                    try:
+                        bot_protection.check_daily_loss(acc.get("history", []))
+                    except Exception:
+                        pass
+
+                    # إشعار تيليجرام لتفعيل وقف الخسارة أو تأمين الربح
+                    if pnl >= 0:
+                        async_telegram_alert(
+                            f"🛡️✅ <b>تم إغلاق الصفقة على ربح مؤمّن ({stage_now})!</b>\n\n"
+                            f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                            f"📈 <b>سعر الخروج:</b> <code>${live_price:,.4f}</code> (وقف متحرك: ${sl:,.4f})\n"
+                            f"💰 <b>الربح الصافي:</b> <b>+{pnl:,.2f} USDT ({pnl_pct:+.2f}%)</b>\n"
+                            f"💵 <b>المبلغ المسترد للكاش:</b> ${net_ret:,.2f} USDT"
+                        )
+                    else:
+                        async_telegram_alert(
+                            f"🛑 <b>تنبيه تفعيل وقف الخسارة (Stop-Loss Guard)!</b>\n\n"
+                            f"🪙 <b>العملة:</b> <code>{sym}</code>\n"
+                            f"📉 <b>سعر الخروج:</b> <code>${live_price:,.4f}</code> (حد الأمان: ${sl:,.4f})\n"
+                            f"💸 <b>الخسارة المحققة:</b> <b>{pnl:,.2f} USDT ({pnl_pct:+.2f}%)</b>\n"
+                            f"💵 <b>المبلغ المسترد للكاش:</b> ${net_ret:,.2f} USDT\n"
+                            f"⚡ <i>تم تسييل الصفقة بالكامل بالسوق لحماية المحفظة ومنع تعميق الخسارة.</i>"
+                        )
             if changed:
                 save_real_positions(acc)
         except Exception as e:
-            pass
+            bot_protection.report_error("sl_guard_loop", "حدث خطأ غير متوقع في حلقة حارس وقف الخسارة", e)
+
+def execute_auto_trade_cycle(force_run: bool = False) -> dict:
+    """
+    ينفذ دورة فحص وتداول آلي ذكي واحدة وفق الضوابط الصارمة:
+    - لا يدخل إلا الصفقات التي تحقق minScore (افتراضياً 86+).
+    - يحترم قاطع الخسارة اليومي، الحد الأقصى للصفقات المفتوحة، والحد اليومي للصفقات الآلية.
+    - يمنع تكرار الدخول في نفس العملة أو خلال فترة التهدئة (Cooldown).
+    """
+    settings = bot_protection.load_settings()
+    if not settings.get("autoTradeEnabled", False) and not force_run:
+        bot_protection.update_auto_trader_heartbeat("متوقف (يدوي)")
+        return {"executed": [], "status": "DISABLED"}
+
+    mode = str(settings.get("autoTradeMode", "demo")).lower()
+    min_score = int(settings.get("autoTradeMinScore", 86) or 86)
+    amount_usdt = float(settings.get("autoTradeAmountUsdt", 15.0) or 15.0)
+    max_open = int(settings.get("maxOpenPositions", 4) or 4)
+    require_safe_mkt = bool(settings.get("autoTradeRequireSafeMarket", True))
+
+    # 1. فحص حالة السوق العام (BTC Regime)
+    regime = get_market_regime()
+    if require_safe_mkt and regime.get("status") == "BEARISH":
+        msg = "تم تعليق الدخول الآلي مؤقتاً لأن البيتكوين في مسار هابط (Risk-Off) 🛡️"
+        bot_protection.update_auto_trader_heartbeat(msg)
+        return {"executed": [], "status": "MARKET_BEARISH", "message": msg}
+
+    # 2. فحص الصفقات المفتوحة حالياً وقاطع الخسارة اليومي
+    if mode == "live":
+        real_acc = load_real_positions()
+        open_pos = real_acc.get("openPositions", [])
+        hist = real_acc.get("history", [])
+        dl = bot_protection.check_daily_loss(hist)
+        if dl.get("locked"):
+            msg = f"قاطع الخسارة اليومي مفعّل: {dl.get('reason')}"
+            bot_protection.update_auto_trader_heartbeat(msg)
+            return {"executed": [], "status": "DAILY_LOCKED", "message": msg}
+    else:
+        demo_acc = load_demo_account()
+        open_pos = demo_acc.get("openPositions", [])
+
+    if len(open_pos) >= max_open:
+        msg = f"المحفظة وصلت للحد الأقصى الآمن من الصفقات المفتوحة ({len(open_pos)}/{max_open})"
+        bot_protection.update_auto_trader_heartbeat(msg)
+        return {"executed": [], "status": "MAX_OPEN_REACHED", "message": msg}
+
+    open_symbols = {p.get("symbol") for p in open_pos}
+
+    # 3. الحصول على نتائج الفحص اللحظي أو تشغيل فحص جديد
+    global CACHE_DATA, CACHE_TIME
+    if not CACHE_DATA or (time.time() - CACHE_TIME > 180):
+        scan_data = run_screener_scan(interval="240", max_pairs=70)
+    else:
+        scan_data = CACHE_DATA
+
+    setups = (scan_data or {}).get("setups") or []
+    candidates = [
+        s for s in setups
+        if int(s.get("score", 0)) >= min_score and s.get("symbol") not in open_symbols
+    ]
+    candidates.sort(key=lambda x: (x.get("score", 0), x.get("rr_ratio", 0)), reverse=True)
+
+    if not candidates:
+        msg = f"لا توجد فرص نخبة تحقق شرط التقييم ({min_score}+) حالياً"
+        bot_protection.update_auto_trader_heartbeat(msg)
+        return {"executed": [], "status": "NO_QUALIFIED_SETUPS", "message": msg}
+
+    executed_list = []
+    slots_left = max_open - len(open_pos)
+
+    for cand in candidates:
+        if slots_left <= 0:
+            break
+        sym = cand["symbol"]
+        allowed, reason = bot_protection.can_auto_trade_symbol(sym, settings)
+        if not allowed:
+            continue
+
+        entry_p = float(cand["price"])
+        tp1 = float(cand["tp1"])
+        tp2 = float(cand["tp2"])
+        tp3 = float(cand.get("tp3") or tp2)
+        sl = float(cand["sl"])
+        score = int(cand["score"])
+        setup_name = f"🤖 آلي: {cand['setup_name']}"
+
+        if mode == "demo":
+            demo_acc = load_demo_account()
+            bal = float(demo_acc.get("balanceUsdt", 0) or 0)
+            if bal < amount_usdt:
+                bot_protection.update_auto_trader_heartbeat(f"رصيد المحاكاة غير كافٍ (${bal:.2f})")
+                break
+            fee = round(amount_usdt * 0.001, 4)
+            qty_coins = round((amount_usdt - fee) / entry_p, 6)
+            pos_id = f"AUTO-DEMO-{int(time.time())}-{sym[:4]}"
+            new_pos = {
+                "id": pos_id,
+                "symbol": sym,
+                "baseCoin": sym.replace("USDT", ""),
+                "side": "Buy",
+                "orderType": "Market",
+                "entryPrice": entry_p,
+                "currentPrice": entry_p,
+                "highestPrice": entry_p,
+                "qty": qty_coins,
+                "amountUsdt": amount_usdt,
+                "feePaid": fee,
+                "currentValue": amount_usdt,
+                "unrealizedPnL": 0.0,
+                "unrealizedPnLPct": 0.0,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp3": tp3,
+                "sl": sl,
+                "originalSl": sl,
+                "protectionStage": "INITIAL",
+                "tpStrategy": "TP1_TP2",
+                "setupName": setup_name,
+                "score": score,
+                "openedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "OPEN",
+            }
+            demo_acc["balanceUsdt"] = round(bal - amount_usdt, 2)
+            demo_acc.setdefault("openPositions", []).insert(0, new_pos)
+            save_demo_account(demo_acc)
+            bot_protection.record_auto_trade_execution(sym, "DEMO", entry_p, amount_usdt, score, setup_name)
+            executed_list.append(new_pos)
+            slots_left -= 1
+            async_telegram_alert(
+                f"🤖🎮 <b>صفقة آلية جديدة (وضع المحاكاة الذكي)!</b>\n\n"
+                f"🪙 <b>العملة:</b> <code>{sym}</code> (تقييم: <b>{score}/98</b>)\n"
+                f"📈 <b>سعر الدخول:</b> <code>${entry_p:,.4f}</code>\n"
+                f"💵 <b>المبلغ:</b> <code>${amount_usdt:,.2f} USDT</code>\n"
+                f"🎯 <b>الهدف الأول (TP1):</b> <code>${tp1:,.4f}</code>\n"
+                f"🚀 <b>الهدف الثاني (TP2):</b> <code>${tp2:,.4f}</code>\n"
+                f"🛡️ <b>وقف الخسارة (SL):</b> <code>${sl:,.4f}</code>\n"
+                f"⚙️ <b>النموذج:</b> {cand['setup_name']}"
+            )
+
+        elif mode == "live":
+            # تنفيذ حقيقي على Bybit Spot مع تقسيم الأهداف 50% TP1 و 50% TP2
+            info = get_instrument_info(sym)
+            tick_size = info.get("priceFilter", {}).get("tickSize", "0.0001")
+            base_prec = info.get("lotSizeFilter", {}).get("basePrecision", "0.01")
+
+            buy_body = {
+                "category": "spot",
+                "symbol": sym,
+                "side": "Buy",
+                "orderType": "Market",
+                "marketUnit": "quoteCoin",
+                "qty": f"{amount_usdt:.2f}",
+            }
+            res = bybit_signed_request("POST", "/v5/order/create", json_body=buy_body)
+            if res.get("retCode") != 0:
+                bot_protection.report_error(f"auto_buy_{sym}", f"تعذر تنفيذ شراء آلي للعملة {sym}: {res.get('retMsg')}")
+                continue
+
+            order_id = res.get("result", {}).get("orderId")
+            time.sleep(0.8)
+            exec_qty = 0.0
+            exec_price = entry_p
+            try:
+                ex_res = bybit_signed_request("GET", "/v5/execution/list", params={"category": "spot", "orderId": order_id})
+                ex_list = ex_res.get("result", {}).get("list", [])
+                if ex_list:
+                    exec_qty = sum(float(e.get("execQty", 0) or 0) for e in ex_list)
+                    tot_v = sum(float(e.get("execValue", 0) or 0) for e in ex_list)
+                    if exec_qty > 0:
+                        exec_price = tot_v / exec_qty
+            except Exception:
+                pass
+            if exec_qty <= 0:
+                exec_qty = (amount_usdt * 0.999) / entry_p
+
+            sell_qty = exec_qty * 0.999
+            half1 = float(round_to_step(sell_qty / 2.0, base_prec, rounding=ROUND_DOWN))
+            half2 = float(round_to_step(sell_qty - half1, base_prec, rounding=ROUND_DOWN))
+            tp_ids = []
+            for h_q, h_tp in [(half1, tp1), (half2, tp2)]:
+                if h_q > 0:
+                    s_res = bybit_signed_request("POST", "/v5/order/create", json_body={
+                        "category": "spot",
+                        "symbol": sym,
+                        "side": "Sell",
+                        "orderType": "Limit",
+                        "qty": round_to_step(h_q, base_prec, rounding=ROUND_DOWN),
+                        "price": round_to_step(h_tp, tick_size),
+                        "timeInForce": "GTC",
+                    })
+                    if s_res.get("retCode") == 0:
+                        tp_ids.append(s_res.get("result", {}).get("orderId"))
+
+            tp_order_id = ", ".join(tp_ids) if tp_ids else None
+            real_acc = load_real_positions()
+            new_real_pos = {
+                "id": f"AUTO-REAL-{int(time.time())}-{sym[:4]}",
+                "symbol": sym,
+                "baseCoin": sym.replace("USDT", ""),
+                "side": "Buy",
+                "orderType": "Market",
+                "entryPrice": exec_price,
+                "currentPrice": exec_price,
+                "highestPrice": exec_price,
+                "qty": exec_qty,
+                "amountUsdt": amount_usdt,
+                "feePaid": round(amount_usdt * 0.001, 3),
+                "currentValue": amount_usdt,
+                "unrealizedPnL": 0.0,
+                "unrealizedPnLPct": 0.0,
+                "tp1": tp1,
+                "tp2": tp2,
+                "tp3": tp3,
+                "sl": sl,
+                "originalSl": sl,
+                "protectionStage": "INITIAL",
+                "setupName": setup_name,
+                "score": score,
+                "openedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "OPEN",
+                "orderId": order_id,
+                "tpOrderId": tp_order_id,
+            }
+            real_acc.setdefault("openPositions", []).insert(0, new_real_pos)
+            save_real_positions(real_acc)
+            bot_protection.record_auto_trade_execution(sym, "LIVE", exec_price, amount_usdt, score, setup_name)
+            executed_list.append(new_real_pos)
+            slots_left -= 1
+            async_telegram_alert(
+                f"🤖🔴 <b>تم تنفيذ صفقة حقيقية آلياً على Bybit!</b>\n\n"
+                f"🪙 <b>العملة:</b> <code>{sym}</code> (تقييم: <b>{score}/98</b>)\n"
+                f"📈 <b>سعر التنفيذ:</b> <code>${exec_price:,.4f}</code>\n"
+                f"💵 <b>المبلغ المستثمر:</b> <code>${amount_usdt:,.2f} USDT</code>\n"
+                f"🎯 <b>الهدف الأول (50%):</b> <code>${tp1:,.4f}</code>\n"
+                f"🚀 <b>الهدف الثاني (50%):</b> <code>${tp2:,.4f}</code>\n"
+                f"🛡️ <b>وقف الخسارة المحمي:</b> <code>${sl:,.4f}</code>\n"
+                f"⚙️ <b>النموذج:</b> {cand['setup_name']}"
+            )
+
+    if not executed_list:
+        bot_protection.update_auto_trader_heartbeat("تم الفحص — لا توجد عملات متاحة خارج التهدئة")
+
+    return {"executed": executed_list, "status": "OK", "count": len(executed_list)}
+
+
+def background_auto_trader_loop():
+    print("🤖 [Smart Auto-Trader] Autonomous background trading engine ready.")
+    time.sleep(8.0)
+    while True:
+        try:
+            settings = bot_protection.load_settings()
+            interval_sec = max(60, int(settings.get("autoTradeIntervalSec", 300) or 300))
+            if settings.get("autoTradeEnabled", False):
+                execute_auto_trade_cycle(force_run=False)
+            time.sleep(interval_sec)
+        except Exception as e:
+            bot_protection.report_error("auto_trader_loop", "حدث خطأ في حلقة المتداول الآلي الذكي", e)
+            time.sleep(60)
+
 
 def cloud_keepalive_loop():
     """Keeps the Render cloud service awake by sending an external HTTP ping every 8 minutes."""
@@ -2239,8 +2741,10 @@ def start_server():
     import webbrowser
     import threading
 
-    # Start background Stop-Loss guard daemon
+    # Start background Stop-Loss guard daemon + Watchdog monitor + Smart Auto-Trader
     threading.Thread(target=background_stop_loss_guard, daemon=True).start()
+    threading.Thread(target=bot_protection.guard_watchdog_loop, daemon=True).start()
+    threading.Thread(target=background_auto_trader_loop, daemon=True).start()
 
     # Start cloud keep-alive loop on cloud instances to ensure 24/7 wakefulness
     is_cloud = bool(os.environ.get("RENDER") or os.environ.get("KOYEB_APP_NAME") or os.environ.get("PORT"))

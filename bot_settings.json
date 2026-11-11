@@ -1,0 +1,21 @@
+{
+  "breakevenBufferPct": 0.25,
+  "lockTp1AtMidwayToTp2": true,
+  "trailingEnabled": true,
+  "trailDistanceR": 1.0,
+  "defaultStopLossPct": 5.0,
+  "dailyLossLimitEnabled": true,
+  "dailyMaxLossPct": 3.0,
+  "dailyMaxLossUsdt": 0,
+  "maxOpenPositions": 4,
+  "autoTradeEnabled": false,
+  "autoTradeMode": "demo",
+  "autoTradeMinScore": 86,
+  "autoTradeAmountUsdt": 15.0,
+  "autoTradeMaxPerDay": 3,
+  "autoTradeCooldownHours": 12,
+  "autoTradeRequireSafeMarket": true,
+  "autoTradeIntervalSec": 300,
+  "errorAlertCooldownSec": 600,
+  "guardStaleAlertSec": 90
+}

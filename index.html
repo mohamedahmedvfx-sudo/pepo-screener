@@ -109,6 +109,10 @@
                         <span>📱</span>
                         <span>تيليجرام</span>
                     </button>
+                    <button type="button" class="btn-account-nav" onclick="openProtectionModal()" title="لوحة حماية رأس المال، التداول الآلي الذكي، ونتائج الاختبار التاريخي" style="border-color: rgba(0,240,255,0.45); background: rgba(0,240,255,0.08);">
+                        <span>🛡️🤖</span>
+                        <span>الحماية والتداول الآلي</span>
+                    </button>
                 </div>
 
                 <button type="button" class="btn-sound-toggle active" id="soundToggleBtn" onclick="toggleSoundAlert()" title="تفعيل/تعطيل التنبيه الصوتي عند اكتشاف صفقات ذهبية">
@@ -922,6 +926,151 @@
         </div>
     </div>
 
+    <!-- Capital Protection, Smart Auto-Trader & Backtest Modal -->
+    <div id="protectionModal" class="modal-overlay hidden">
+        <div class="modal-container large-modal" style="max-width: 980px;">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <span class="m-icon">🛡️</span>
+                    <div>
+                        <h3>مركز حماية رأس المال، التداول الآلي الذكي، والاختبار التاريخي</h3>
+                        <span class="m-sub">إدارة التريلينج ستوب، قاطع الخسارة اليومي، البوت الآلي، وقياس كفاءة الاستراتيجيات</span>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-modal" onclick="closeProtectionModal()">✖</button>
+            </div>
+
+            <div class="modal-demo-body" style="padding: 20px; max-height: 82vh; overflow-y: auto;">
+                <!-- Live Status Banner -->
+                <div id="protStatusBanner" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(195px, 1fr)); gap: 12px; margin-bottom: 18px;">
+                    <div class="hs-card" style="padding: 12px;">
+                        <span class="hs-lbl">نبض حارس وقف الخسارة:</span>
+                        <span class="hs-val mono text-green" id="protGuardHeartbeat">نشط ✅</span>
+                    </div>
+                    <div class="hs-card" style="padding: 12px;">
+                        <span class="hs-lbl">ربح / خسارة اليوم المحققة:</span>
+                        <span class="hs-val mono" id="protTodayPnl">$0.00 USDT</span>
+                    </div>
+                    <div class="hs-card" style="padding: 12px;">
+                        <span class="hs-lbl">حالة قاطع الخسارة اليومي:</span>
+                        <span class="hs-val mono text-green" id="protDailyLockState">آمن (مسموح التداول)</span>
+                    </div>
+                    <div class="hs-card" style="padding: 12px;">
+                        <span class="hs-lbl">حالة المتداول الآلي الذكي:</span>
+                        <span class="hs-val mono" id="protAutoTraderState">متوقف (يدوي)</span>
+                    </div>
+                </div>
+
+                <!-- Settings Grid -->
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; margin-bottom: 20px;">
+                    <!-- Box 1: Capital Protection Settings -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+                        <h4 style="margin: 0 0 12px 0; color: #00F0FF; font-size: 15px;">🛡️ إعدادات حماية الصفقات ووقف الخسارة المتحرك</h4>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label class="form-label">هامش تأمين الدخول بعد الهدف الأول (Breakeven + العمولة %):</label>
+                            <input type="number" step="0.05" id="cfgBreakevenBuffer" value="0.25">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label class="form-label">مسافة الوقف المتحرك (Trailing Stop بوحدة R):</label>
+                            <input type="number" step="0.1" id="cfgTrailDistanceR" value="1.0">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label class="form-label">أقصى نسبة خسارة يومية مسموحة (% من المحفظة):</label>
+                            <input type="number" step="0.5" id="cfgDailyMaxLossPct" value="3.0">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label class="form-label">الحد الأقصى للصفقات المفتوحة في نفس الوقت:</label>
+                            <input type="number" step="1" id="cfgMaxOpenPositions" value="4">
+                        </div>
+                        <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top: 8px; font-size: 13px;">
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="checkbox" id="cfgTrailingEnabled" checked> تفعيل التريلينج ستوب
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="checkbox" id="cfgLockTp1" checked> قفل ربح TP1 في منتصف الطريق لـ TP2
+                            </label>
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                                <input type="checkbox" id="cfgDailyLimitEnabled" checked> تفعيل قاطع الخسارة اليومي
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Box 2: Smart Auto-Trader Settings -->
+                    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 16px;">
+                        <h4 style="margin: 0 0 12px 0; color: #F5B041; font-size: 15px;">🤖 إعدادات المتداول الآلي الذكي (Auto-Trader)</h4>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px; padding: 8px 12px; background: rgba(245,176,65,0.1); border-radius: 8px;">
+                            <label style="display:flex; align-items:center; gap:8px; font-weight:700; cursor:pointer;">
+                                <input type="checkbox" id="cfgAutoTradeEnabled"> تفعيل الدخول الآلي التلقائي
+                            </label>
+                            <select id="cfgAutoTradeMode" style="padding: 5px 10px; border-radius: 6px; background: #121722; color: #fff; border: 1px solid rgba(255,255,255,0.2);">
+                                <option value="demo">🎮 حساب المحاكاة (Demo آمن)</option>
+                                <option value="live">🔴 الحساب الحقيقي (Bybit Live)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label class="form-label">الحد الأدنى لتقييم الفرصة للدخول الآلي (Score 80 - 98):</label>
+                            <input type="number" step="1" min="78" max="98" id="cfgAutoTradeMinScore" value="86">
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label class="form-label">مبلغ الشراء لكل صفقة آلية (USDT):</label>
+                            <input type="number" step="1" min="5" id="cfgAutoTradeAmountUsdt" value="15">
+                        </div>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-group" style="margin-bottom: 10px;">
+                                <label class="form-label">أقصى صفقات آلية يومياً:</label>
+                                <input type="number" step="1" min="1" id="cfgAutoTradeMaxPerDay" value="3">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 10px;">
+                                <label class="form-label">تهدئة العملة (ساعات):</label>
+                                <input type="number" step="1" min="1" id="cfgAutoTradeCooldownHours" value="12">
+                            </div>
+                        </div>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size: 13px; margin-top: 4px;">
+                            <input type="checkbox" id="cfgAutoTradeRequireSafeMarket" checked> منع الشراء الآلي عندما يكون البيتكوين في مسار هابط (Risk-Off)
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Action Buttons Row -->
+                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom: 22px;">
+                    <button type="button" class="btn-save-api" onclick="saveProtectionSettings()" style="padding: 10px 22px;">
+                        💾 حفظ إعدادات الحماية والتداول الآلي
+                    </button>
+                    <button type="button" class="btn-demo-chart" onclick="triggerAutoTraderNow()" style="padding: 10px 18px; background: rgba(245,176,65,0.18); border: 1px solid #F5B041; color: #F5B041; font-weight:700; border-radius:8px; cursor:pointer;">
+                        ⚡ تشغيل دورة فحص وتداول آلي الآن
+                    </button>
+                    <button type="button" class="btn-demo-chart" id="btnUnlockDaily" onclick="unlockDailyBreaker()" style="padding: 10px 16px; display:none; background: rgba(246,70,93,0.2); border: 1px solid #f6465d; color: #fff; border-radius:8px; cursor:pointer;">
+                        🔓 فك قفل الخسارة اليومية يدوياً
+                    </button>
+                </div>
+
+                <!-- Backtest Section -->
+                <div style="background: rgba(0,240,255,0.04); border: 1px solid rgba(0,240,255,0.25); border-radius: 12px; padding: 16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom: 12px;">
+                        <div>
+                            <h4 style="margin:0; color:#00F0FF; font-size:15px;">📊 محرك الاختبار التاريخي الحقيقي (Historical Backtest - 25 عملة قيادية)</h4>
+                            <span style="font-size:12px; color:var(--text-secondary);">يختبر النماذج الأربعة على آخر 500 شمعة 4 ساعات مغلقة مع خصم العمولات وتطبيق Breakeven + Trailing Stop</span>
+                        </div>
+                        <button type="button" class="btn-save-api" id="btnRunBacktest" onclick="runBacktestFromUi()" style="padding: 8px 18px;">
+                            🚀 تشغيل الباك-تيست الآن
+                        </button>
+                    </div>
+                    <div id="backtestResultsContainer" style="font-size: 13px; color: var(--text-secondary);">
+                        انقر على «تشغيل الباك-تيست الآن» لعرض نسبة النجاح ومعامل الربح لكل نموذج فني مباشرة.
+                    </div>
+                </div>
+
+                <!-- Live Account Journal Analytics Section -->
+                <div style="background: rgba(14,203,129,0.04); border: 1px solid rgba(14,203,129,0.25); border-radius: 12px; padding: 16px; margin-top: 16px;">
+                    <h4 style="margin:0 0 10px 0; color:#0ECB81; font-size:15px;">🏆 التحليل الإحصائي لسجل صفقاتك المنفذة (Journal Analytics)</h4>
+                    <div id="journalAnalyticsContainer" style="font-size: 13px; color: var(--text-secondary);">
+                        جاري تحميل إحصائيات الأداء...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- App Footer -->
     <footer class="app-footer">
         <div class="footer-container">
@@ -931,6 +1080,6 @@
     </footer>
 
     <!-- App Logic -->
-    <script src="app.js?v=11"></script>
+    <script src="app.js?v=12"></script>
 </body>
 </html>
