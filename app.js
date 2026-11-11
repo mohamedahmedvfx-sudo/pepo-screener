@@ -2390,6 +2390,34 @@ window.deleteRealHistoryItem = async function(id, execId, orderId, symbol) {
     }
 };
 
+window.clearAllRealHistory = async function() {
+    if (!confirm("⚠️ تحذير: هل أنت متأكد من مسح جميع الصفقات السابقة من السجل الحقيقي وتصفير الإحصائيات بالكامل؟\n\n(لن يؤثر هذا الإجراء على أي صفقات مفتوحة حالياً)")) {
+        return;
+    }
+    try {
+        const res = await fetch('/api/real/history/clear-all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.success) {
+            if (state.realPositions) {
+                state.realPositions.history = [];
+                if (data.stats) {
+                    state.realPositions.stats = data.stats;
+                }
+            }
+            await fetchRealPositions();
+            alert(data.message || 'تم مسح السجل بالكامل وتصفير الإحصائيات بنجاح.');
+        } else {
+            alert(data.message || 'تعذر مسح السجل.');
+        }
+    } catch (e) {
+        console.error('Error clearing history:', e);
+        alert('حدث خطأ أثناء الاتصال بالسيرفر لمسح السجل.');
+    }
+};
+
 function openChartForHistoryTrade(symbol, entry, exit) {
     closeRealModal();
     const customLevels = {

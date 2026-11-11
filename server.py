@@ -1002,68 +1002,61 @@ def heal_and_recalc_history(acc):
 def load_real_positions():
     global _REAL_POS_CACHE
     with REAL_POS_LOCK:
-        # 1. Check primary file, then backup, then seed file
-        candidates = [REAL_POS_FILE, REAL_POS_BAK_FILE, REAL_POS_SEED_FILE]
+        # 1. Check primary file first
+        if os.path.exists(REAL_POS_FILE) and os.path.getsize(REAL_POS_FILE) > 20:
+            try:
+                with open(REAL_POS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "openPositions" in data:
+                    try:
+                        if heal_and_recalc_history(data):
+                            save_real_positions(data)
+                    except Exception:
+                        pass
+                    _REAL_POS_CACHE = data
+                    return data
+            except Exception as err:
+                print(f"⚠️ [Real Positions] Read error on {os.path.basename(REAL_POS_FILE)}: {err}")
+
+        # 2. Check backup and seed file if primary is missing or invalid
+        candidates = [REAL_POS_BAK_FILE, REAL_POS_SEED_FILE]
         for fpath in candidates:
             if os.path.exists(fpath) and os.path.getsize(fpath) > 20:
                 try:
                     with open(fpath, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     if isinstance(data, dict) and "openPositions" in data:
-                        # Prioritize non-empty data
-                        if len(data.get("openPositions", [])) > 0 or len(data.get("history", [])) > 0:
-                            try:
-                                if heal_and_recalc_history(data):
-                                    save_real_positions(data)
-                            except Exception:
-                                pass
-                            _REAL_POS_CACHE = data
-                            return data
+                        _REAL_POS_CACHE = data
+                        return data
                 except Exception as err:
                     print(f"⚠️ [Real Positions] Read error on {os.path.basename(fpath)}: {err}")
 
-        # 2. Return memory cache if it has positions or history
+        # 3. Return memory cache if present
         if _REAL_POS_CACHE and isinstance(_REAL_POS_CACHE, dict):
-            if len(_REAL_POS_CACHE.get("openPositions", [])) > 0 or len(_REAL_POS_CACHE.get("history", [])) > 0:
-                return _REAL_POS_CACHE
-
-        # 3. If primary file exists and has empty structure, check if seed file can restore it
-        if os.path.exists(REAL_POS_SEED_FILE) and os.path.getsize(REAL_POS_SEED_FILE) > 20:
-            try:
-                with open(REAL_POS_SEED_FILE, "r", encoding="utf-8") as f:
-                    seed_data = json.load(f)
-                if isinstance(seed_data, dict) and (seed_data.get("openPositions") or seed_data.get("history")):
-                    print("♻️ [Real Positions] Restored active positions and history from immutable seed file.")
-                    save_real_positions(seed_data)
-                    _REAL_POS_CACHE = seed_data
-                    return seed_data
-            except Exception as se:
-                print(f"⚠️ [Real Positions] Seed restore error: {se}")
-
-        # 4. Fallback default only if completely uninitialized
-        if _REAL_POS_CACHE is not None:
             return _REAL_POS_CACHE
 
         default_acc = {
             "openPositions": [],
             "history": [],
+            "ignoredExecIds": [],
+            "stats": {"totalTrades": 0, "winningTrades": 0, "losingTrades": 0, "winRate": 0.0, "totalRealizedPnL": 0.0},
             "updatedAt": datetime.now().isoformat()
         }
         _REAL_POS_CACHE = default_acc
         return default_acc
 
-def save_real_positions(data):
+def save_real_positions(data, force=False):
     global _REAL_POS_CACHE
     if not isinstance(data, dict):
         return
     with REAL_POS_LOCK:
-        # Anti-Wipeout Guard: Never overwrite valid positions/history with empty arrays
+        # Anti-Wipeout Guard: Never overwrite valid positions/history with empty arrays unless explicitly forced
         curr_open = len((_REAL_POS_CACHE or {}).get("openPositions", []))
         curr_hist = len((_REAL_POS_CACHE or {}).get("history", []))
         new_open = len(data.get("openPositions", []))
         new_hist = len(data.get("history", []))
 
-        if (curr_open > 0 or curr_hist > 0) and (new_open == 0 and new_hist == 0):
+        if not force and (curr_open > 0 or curr_hist > 0) and (new_open == 0 and new_hist == 0):
             print("🛑 [CRITICAL GUARD] Attempted to wipe out real_positions with empty lists! Save blocked.")
             return
 
@@ -1077,12 +1070,11 @@ def save_real_positions(data):
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_file, REAL_POS_FILE)
-            # Sync backup file
+            # Sync backup and seed files
             try:
                 import shutil
                 shutil.copyfile(REAL_POS_FILE, REAL_POS_BAK_FILE)
-                if len(data.get("openPositions", [])) > 0:
-                    shutil.copyfile(REAL_POS_FILE, REAL_POS_SEED_FILE)
+                shutil.copyfile(REAL_POS_FILE, REAL_POS_SEED_FILE)
             except Exception:
                 pass
         except Exception as e:
@@ -2088,6 +2080,33 @@ class ScreenerWebHandler(SimpleHTTPRequestHandler):
                 self._send_json({"success": False, "message": "لم يتم العثور على الصفقة في السجل"})
             return
 
+        elif path == "/api/real/history/clear-all":
+            with REAL_POS_LOCK:
+                real_acc = load_real_positions()
+                history = real_acc.get("history", [])
+                ignored = set(real_acc.get("ignoredExecIds", []))
+                for h in history:
+                    for k in ["id", "execId", "orderId"]:
+                        v = h.get(k)
+                        if v:
+                            ignored.add(str(v))
+                real_acc["ignoredExecIds"] = list(ignored)
+                real_acc["history"] = []
+                real_acc["stats"] = {
+                    "totalTrades": 0,
+                    "winningTrades": 0,
+                    "losingTrades": 0,
+                    "winRate": 0.0,
+                    "totalRealizedPnL": 0.0
+                }
+                save_real_positions(real_acc, force=True)
+                self._send_json({
+                    "success": True,
+                    "message": "تم مسح سجل الصفقات بالكامل بنجاح وتصفير الإحصائيات",
+                    "stats": real_acc["stats"]
+                })
+            return
+
         elif path == "/api/order/cancel":
             symbol = req_json.get("symbol", "").upper()
             order_id = req_json.get("orderId", "")
@@ -2737,9 +2756,42 @@ def cloud_keepalive_loop():
         except Exception:
             pass
 
-def start_server():
+def open_browser_reliably(url: str):
+    """Opens URL in default browser reliably on Windows, even when launched from .bat or background."""
+    import subprocess
     import webbrowser
+    if sys.platform.startswith("win"):
+        try:
+            os.startfile(url)
+            return
+        except Exception:
+            pass
+        try:
+            subprocess.Popen(f'cmd /c start "" "{url}"', shell=True)
+            return
+        except Exception:
+            pass
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def start_server():
     import threading
+
+    # 1. If server is already running, open browser immediately and exit cleanly
+    if is_port_responding(PORT):
+        print("\n" + "=" * 72)
+        print("  ⚡ BYBIT SPOT AI SCREENER PRO")
+        print("  ✅ الخادم نشط ويعمل بالفعل في خلفية النظام على المنفذ 5600!")
+        print(f"  🌐 جاري فتح واجهة المنصة الآن في متصفحك: http://127.0.0.1:{PORT}/")
+        print("=" * 72 + "\n")
+        open_browser_reliably(f"http://127.0.0.1:{PORT}/")
+        sys.exit(0)
+
+    # 2. Clean up any stale/hung port occupant
+    kill_port_owner(PORT)
 
     # Start background Stop-Loss guard daemon + Watchdog monitor + Smart Auto-Trader
     threading.Thread(target=background_stop_loss_guard, daemon=True).start()
@@ -2750,22 +2802,6 @@ def start_server():
     is_cloud = bool(os.environ.get("RENDER") or os.environ.get("KOYEB_APP_NAME") or os.environ.get("PORT"))
     if is_cloud:
         threading.Thread(target=cloud_keepalive_loop, daemon=True).start()
-
-    # 1. If server is already running, open browser and exit cleanly
-    if is_port_responding(PORT):
-        print("\n" + "=" * 72)
-        print("  ⚡ BYBIT SPOT AI SCREENER PRO")
-        print("  ✅ الخادم نشط ويعمل بالفعل في خلفية النظام على المنفذ 5600!")
-        print(f"  🌐 جاري فتح واجهة المنصة الآن في متصفحك: http://127.0.0.1:{PORT}/")
-        print("=" * 72 + "\n")
-        try:
-            webbrowser.open(f"http://127.0.0.1:{PORT}/")
-        except Exception:
-            pass
-        sys.exit(0)
-
-    # 2. Clean up any stale/hung port occupant
-    kill_port_owner(PORT)
 
     ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer.daemon_threads = True
@@ -2783,14 +2819,10 @@ def start_server():
         sys.exit(1)
 
     # 3. Schedule browser opening only if running locally on desktop
-    is_cloud = bool(os.environ.get("RENDER") or os.environ.get("KOYEB_APP_NAME") or os.environ.get("PORT"))
     if not is_cloud:
         def launch_browser():
-            time.sleep(0.7)
-            try:
-                webbrowser.open(f"http://127.0.0.1:{PORT}/")
-            except Exception:
-                pass
+            time.sleep(0.6)
+            open_browser_reliably(f"http://127.0.0.1:{PORT}/")
         threading.Thread(target=launch_browser, daemon=True).start()
 
     print("\n" + "=" * 72)
